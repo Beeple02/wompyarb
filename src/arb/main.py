@@ -38,14 +38,20 @@ class State:
     def __init__(self, cfg: Config):
         self.started_at = time.time()
         self.known: dict = {}
+        self.pm_404: dict = {}   # (asset, t_start) -> nb de 404 consécutifs sur le book Polymarket
         self.dis_cache = DisCache(cfg)
 
     def reset_caches(self) -> None:
         self.known.clear()
+        self.pm_404.clear()
         self.dis_cache.data, self.dis_cache.ts = {}, 0.0
 
 
-async def tick_asset(asset, cfg, pool, kal, pmc, known, dis_cache):
+def _is_404(e) -> bool:
+    return isinstance(e, httpx.HTTPStatusError) and e.response.status_code == 404
+
+
+async def tick_asset(asset, cfg, pool, kal, pmc, known, dis_cache, state):
     now = datetime.now(timezone.utc)
     start, end = windows.current(now)
     key = (asset, start)
@@ -59,13 +65,26 @@ async def tick_asset(asset, cfg, pool, kal, pmc, known, dis_cache):
         known[key] = (wid, ks_ref, pm_ref)
         for k in [k for k in known if k[1] < start]:
             del known[k]
+        for k in [k for k in state.pm_404 if k[1] < start]:
+            del state.pm_404[k]
     wid, ks_ref, pm_ref = known[key]
 
     ks_b, pm_b = await asyncio.gather(kal.fetch_book(ks_ref), pmc.fetch_book(pm_ref),
                                       return_exceptions=True)
     for name, b in (("kalshi", ks_b), ("polymarket", pm_b)):
-        if isinstance(b, Exception):
+        if isinstance(b, Exception) and not (name == "polymarket" and _is_404(b)):
             log.warning("%s %s fetch_book: %r", asset, name, b)
+    # Book Polymarket 404 = pas de book pour l'instant : on retente en silence, 1 log par fenêtre
+    if _is_404(pm_b):
+        n = state.pm_404.get(key, 0) + 1
+        state.pm_404[key] = n
+        if n == 1:
+            log.info("%s polymarket book 404 (%s) : pas de book pour l'instant, retry silencieux",
+                     asset, pm_ref.ident)
+    elif key in state.pm_404 and not isinstance(pm_b, Exception):
+        n = state.pm_404.pop(key)
+        log.info("%s polymarket book disponible après %d x 404 (~%.0f s)", asset, n,
+                 n * cfg.poll_interval_s)
     if isinstance(ks_b, Exception) or isinstance(pm_b, Exception):
         return
     await db.insert_quote(pool, wid, ks_b)
@@ -87,7 +106,7 @@ async def collector_loop(cfg, pool, http, state):
         t0 = time.monotonic()
         try:
             await dis_cache.refresh(pool)
-            res = await asyncio.gather(*[tick_asset(a, cfg, pool, kal, pmc, known, dis_cache)
+            res = await asyncio.gather(*[tick_asset(a, cfg, pool, kal, pmc, known, dis_cache, state)
                                          for a in cfg.assets], return_exceptions=True)
             for a, r in zip(cfg.assets, res):
                 if isinstance(r, Exception):
