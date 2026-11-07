@@ -9,7 +9,7 @@ import httpx
 from ..config import Config
 from ..models import Book, MarketRef, asks_from_bids
 from ..windows import KS_SERIES
-from .util import parse_levels
+from .util import num, parse_levels
 
 log = logging.getLogger("arb.kalshi")
 
@@ -34,6 +34,13 @@ def parse_result(js: dict) -> str | None:
     return {"yes": "up", "no": "down"}.get(r)
 
 
+def parse_market_result(js: dict) -> dict:
+    """Résultat + prix de référence (floor_strike) et valeur de règlement (expiration_value) si présents."""
+    m = js.get("market", js)
+    return {"result": parse_result(js), "strike": num(m.get("floor_strike")),
+            "settle": num(m.get("expiration_value"))}
+
+
 class KalshiClient:
     def __init__(self, cfg: Config, http: httpx.AsyncClient):
         self.cfg, self.http = cfg, http
@@ -54,5 +61,5 @@ class KalshiClient:
         js = await self._get(f"/markets/{ref.ident}/orderbook", depth=10)
         return parse_orderbook(js, time.time())
 
-    async def fetch_result(self, ref: MarketRef) -> str | None:
-        return parse_result(await self._get(f"/markets/{ref.ident}"))
+    async def fetch_result(self, ref: MarketRef) -> dict:
+        return parse_market_result(await self._get(f"/markets/{ref.ident}"))
