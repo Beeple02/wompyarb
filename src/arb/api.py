@@ -274,6 +274,30 @@ async def stats_signals(req):
     return jr(rows(rs))
 
 
+async def stats_basis(req):
+    """Compare les valeurs de référence (strike) et de règlement des deux venues, fenêtre par fenêtre."""
+    async with req.app["pool"].acquire() as c:
+        agg = rows(await c.fetch(
+            """SELECT w.asset, count(*) n,
+                      count(*) FILTER (WHERE r.pm_strike = r.ks_strike) same_strike,
+                      count(*) FILTER (WHERE r.pm_settle = r.ks_settle) same_settle,
+                      avg(abs(r.pm_strike - r.ks_strike) / r.ks_strike * 1e4) avg_strike_diff_bps,
+                      max(abs(r.pm_strike - r.ks_strike) / r.ks_strike * 1e4) max_strike_diff_bps,
+                      avg(abs(r.pm_settle - r.ks_settle) / r.ks_settle * 1e4) avg_settle_diff_bps,
+                      max(abs(r.pm_settle - r.ks_settle) / r.ks_settle * 1e4) max_settle_diff_bps,
+                      count(*) FILTER (WHERE r.dis_kind <> 'agree') disagreements
+               FROM resolutions r JOIN windows w ON w.id=r.window_id
+               WHERE r.complete AND r.pm_strike IS NOT NULL AND r.ks_strike IS NOT NULL
+                 AND r.pm_settle IS NOT NULL AND r.ks_settle IS NOT NULL
+               GROUP BY 1 ORDER BY 1"""))
+        recent = rows(await c.fetch(
+            """SELECT w.asset, w.t_start, r.ks_strike, r.pm_strike, r.ks_settle, r.pm_settle,
+                      r.ks_result, r.pm_result, r.dis_kind
+               FROM resolutions r JOIN windows w ON w.id=r.window_id
+               WHERE r.complete ORDER BY w.t_start DESC LIMIT $1""", qint(req, "limit", 40, hi=500)))
+    return jr({"by_asset": agg, "recent": recent})
+
+
 async def logs_h(req):
     return jr(logbuf.tail(qint(req, "limit", 200, hi=3000), req.query.get("level", "INFO"),
                           req.query.get("contains"), qint(req, "after_id", 0, lo=0, hi=10**12)))
@@ -320,7 +344,7 @@ def create_app(cfg, pool, state) -> web.Application:
     g("/api/health", health); g("/api/status", status); g("/api/config", config); g("/api/live", live)
     g("/api/windows", windows_h); g("/api/quotes", quotes_h); g("/api/signals", signals_h)
     g("/api/trades", trades_h); g("/api/resolutions", resolutions_h)
-    g("/api/stats/dis", stats_dis); g("/api/stats/pnl", stats_pnl); g("/api/stats/signals", stats_signals)
+    g("/api/stats/dis", stats_dis); g("/api/stats/pnl", stats_pnl); g("/api/stats/signals", stats_signals); g("/api/stats/basis", stats_basis)
     g("/api/logs", logs_h); g("/api/audit", audit_h)
     p = app.router.add_post
     p("/api/admin/protect", admin_protect); p("/api/admin/unprotect", admin_unprotect)
