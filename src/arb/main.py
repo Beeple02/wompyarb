@@ -121,35 +121,72 @@ async def collector_loop(cfg, pool, http, state):
         await asyncio.sleep(max(0.0, cfg.poll_interval_s - (time.monotonic() - t0)))
 
 
+def backoff_delay(attempt: int) -> float:
+    """Délai avant la prochaine tentative de résolution : 20 s, 40 s, 80 s ... plafonné à 10 min."""
+    return min(20.0 * (2 ** attempt), 600.0)
+
+
+def implied_result(strike, settle) -> str | None:
+    """Règle des deux venues : Up si valeur finale >= valeur de départ (égalité -> Up)."""
+    if strike is None or settle is None:
+        return None
+    return "up" if settle >= strike else "down"
+
+
 async def resolver_loop(cfg, pool, http):
     kal, pmc = KalshiClient(cfg, http), PolymarketClient(cfg, http)
     from .models import MarketRef
+    attempts: dict[int, int] = {}
+    next_try: dict[int, float] = {}
     while True:
         try:
             for w in await db.pending_windows(pool, cfg.resolve_delay_s):
-                ks = pm = None
+                wid, now = w["id"], time.time()
+                if next_try.get(wid, 0.0) > now:
+                    continue
+                n = attempts.get(wid, 0)
+                ks_i = pm_i = None
                 try:
-                    ks = await kal.fetch_result(MarketRef("kalshi", w["ks_ticker"]))
+                    ks_i = await kal.fetch_result(MarketRef("kalshi", w["ks_ticker"]))
                 except Exception as e:
-                    log.warning("kalshi result %s: %r", w["ks_ticker"], e)
+                    if n % 5 == 0:
+                        log.warning("kalshi result %s (essai %d): %r", w["ks_ticker"], n + 1, e)
                 try:
-                    pm = await pmc.fetch_result(MarketRef("polymarket", w["pm_slug"]))
+                    pm_i = await pmc.fetch_event_result(w["asset"], w["t_start"])
                 except Exception as e:
-                    log.warning("pm result %s: %r", w["pm_slug"], e)
+                    if n % 5 == 0:
+                        log.warning("pm result %s %s (essai %d): %r", w["asset"], w["t_start"], n + 1, e)
+                ks = ks_i["result"] if ks_i else None
+                pm = pm_i["result"] if pm_i else None
                 ks_src = "official" if ks else None
                 pm_src = "official" if pm else None
+                # Cohérence interne : le résultat doit suivre la règle >= entre les deux valeurs
+                for venue, info, res in (("kalshi", ks_i, ks), ("polymarket", pm_i, pm)):
+                    imp = implied_result(info.get("strike"), info.get("settle")) if info else None
+                    if res and imp and imp != res:
+                        log.warning("INCOHERENT %s %s %s: result=%s mais settle/strike impliquent %s",
+                                    venue, w["asset"], w["t_start"], res, imp)
                 age = (datetime.now(timezone.utc) - w["t_end"]).total_seconds()
-                if pm is None and age > 600:  # fallback : dernier prix PM avant clôture
-                    mid = await db.last_pm_mid(pool, w["id"], w["t_end"])
+                if pm is None and age > 900:  # dernier recours : dernier prix PM avant clôture
+                    mid = await db.last_pm_mid(pool, wid, w["t_end"])
                     if mid is not None and (mid >= 0.9 or mid <= 0.1):
                         pm, pm_src = ("up" if mid >= 0.9 else "down"), "inferred"
-                done = await db.save_resolution(pool, w["id"], ks, pm, ks_src, pm_src)
+                done = await db.save_resolution(
+                    pool, wid, ks, pm, ks_src, pm_src,
+                    ks_strike=ks_i and ks_i.get("strike"), ks_settle=ks_i and ks_i.get("settle"),
+                    pm_strike=pm_i and pm_i.get("strike"), pm_settle=pm_i and pm_i.get("settle"))
                 if done:
-                    log.info("RESOLVED %s %s ks=%s(%s) pm=%s(%s)", w["asset"], w["t_start"],
-                             ks, ks_src, pm, pm_src)
+                    attempts.pop(wid, None)
+                    next_try.pop(wid, None)
+                    log.info("RESOLVED %s %s ks=%s(%s) pm=%s(%s) strikes ks/pm=%s/%s",
+                             w["asset"], w["t_start"], ks, ks_src, pm, pm_src,
+                             ks_i and ks_i.get("strike"), pm_i and pm_i.get("strike"))
+                else:
+                    attempts[wid] = n + 1
+                    next_try[wid] = now + backoff_delay(n)
         except Exception:
             log.exception("resolver loop")
-        await asyncio.sleep(20)
+        await asyncio.sleep(10)
 
 
 async def prune_loop(cfg, pool):
