@@ -79,12 +79,17 @@ async def tick_asset(asset, cfg, pool, kal, pmc, known, dis_cache, state):
         n = state.pm_404.get(key, 0) + 1
         state.pm_404[key] = n
         if n == 1:
-            log.info("%s polymarket book 404 (%s) : pas de book pour l'instant, retry silencieux",
-                     asset, pm_ref.ident)
+            try:
+                body = pm_b.response.text[:200]
+            except Exception:
+                body = ""
+            since = (datetime.now(timezone.utc) - start).total_seconds()
+            log.info("%s polymarket book 404 à +%.0fs (%s) body=%r | %s", asset, since, pm_ref.ident,
+                     body, await pmc.diagnose(pm_ref))
     elif key in state.pm_404 and not isinstance(pm_b, Exception):
         n = state.pm_404.pop(key)
-        log.info("%s polymarket book disponible après %d x 404 (~%.0f s)", asset, n,
-                 n * cfg.poll_interval_s)
+        since = (datetime.now(timezone.utc) - start).total_seconds()
+        log.info("%s polymarket book disponible à +%.0fs (après %d x 404)", asset, since, n)
     if isinstance(ks_b, Exception) or isinstance(pm_b, Exception):
         return
     await db.insert_quote(pool, wid, ks_b)
