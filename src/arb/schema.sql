@@ -70,3 +70,9 @@ CREATE TABLE IF NOT EXISTS audit_log (
   ts TIMESTAMPTZ NOT NULL DEFAULT now(),
   actor TEXT, event TEXT, payload JSONB
 );
+
+CREATE TABLE IF NOT EXISTS meta (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
