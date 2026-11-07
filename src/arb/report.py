@@ -40,6 +40,19 @@ async def run() -> None:
             sharpe = r["mean"] / sd if sd and not math.isnan(sd) and sd > 0 else float("nan")
             print(f"{r['asset']:5} n={r['n']:4d} pnl=${r['pnl']:8.2f} mean=${r['mean']:6.3f} "
                   f"sd=${sd:6.3f} win={r['win']:.0%} per-trade-sharpe={sharpe:5.2f} roc={r['pnl'] / r['cap']:.2%}")
+
+        print("\n== P&L réalisé par taille d'écart (1 - pm - ks), par contrat ==")
+        for r in await c.fetch(
+                """SELECT floor((1 - vwap_pm - vwap_ks)/0.02)*0.02 AS gap_from, count(*) n,
+                          avg(pnl / n) AS pnl_ct, avg((pnl>0)::int) win
+                   FROM paper_trades WHERE status='settled' GROUP BY 1 ORDER BY 1"""):
+            print(f"écart >= {r['gap_from']:.2f}  n={r['n']:4d}  pnl/ct=${r['pnl_ct']:7.4f}  win={r['win']:.0%}")
+
+        print("\n== Payout par contrat (1 = accord ; 2 ou 0 = désaccord) ==")
+        for r in await c.fetch(
+                """SELECT (payout / n) AS pay, count(*) k FROM paper_trades
+                   WHERE status='settled' GROUP BY 1 ORDER BY 1"""):
+            print(f"payout={r['pay']:.0f}  n={r['k']}")
     await pool.close()
 
 
