@@ -10,7 +10,7 @@ import httpx
 from ..config import Config
 from ..models import Book, MarketRef, asks_from_bids
 from ..windows import pm_event_slug
-from .util import find_key, parse_levels
+from .util import find_key, num, parse_levels
 
 log = logging.getLogger("arb.polymarket")
 
@@ -48,6 +48,41 @@ def parse_result(js: dict) -> str | None:
     return None
 
 
+def _json_list(v):
+    if isinstance(v, str):
+        try:
+            return json.loads(v)
+        except ValueError:
+            return None
+    return v
+
+
+def parse_event(js: dict) -> dict | None:
+    """Résultat d'un événement up/down Polymarket US (endpoint /v1/events/slug/{slug}).
+
+    Structure observée : event.markets[0] avec status MARKET_STATUS_RESOLVED, outcomes ["Yes","No"],
+    outcomePrices ["0","1"] (Yes = Up = côté long) et assetPriceTerms.{priceToBeat, settlementPrice}.
+    Le résultat n'est renvoyé qu'une fois le marché résolu."""
+    ev = js.get("event", js) if isinstance(js, dict) else {}
+    markets = ev.get("markets") if isinstance(ev, dict) else None
+    m = markets[0] if isinstance(markets, list) and markets and isinstance(markets[0], dict) else None
+    if m is None:
+        return None
+    status = str(m.get("status", ""))
+    terms = m.get("assetPriceTerms") or {}
+    result = None
+    outcomes, prices = _json_list(m.get("outcomes")), _json_list(m.get("outcomePrices"))
+    if "RESOLVED" in status.upper() and outcomes and prices:
+        try:
+            for name, p in zip(outcomes, prices):
+                if float(p) >= 0.99 and str(name).lower() in _MAP:
+                    result = _MAP[str(name).lower()]
+        except (TypeError, ValueError):
+            result = None
+    return {"result": result, "strike": num(terms.get("priceToBeat")),
+            "settle": num(terms.get("settlementPrice")), "status": status}
+
+
 _DIAG_HINTS = ("active", "closed", "archived", "state", "status", "tradable", "accepting", "orderbook",
                "enable", "open", "start", "end", "resolved", "liquidity", "volume")
 
@@ -82,6 +117,11 @@ class PolymarketClient:
 
     async def fetch_result(self, ref: MarketRef) -> str | None:
         return parse_result(await self._get(self.cfg.pm_market_path, ref.ident))
+
+    async def fetch_event_result(self, asset: str, start: datetime) -> dict | None:
+        """Résultat via l'endpoint ÉVÉNEMENT (le endpoint marché /v1/markets/slug/.. renvoie 404 après
+        la clôture ; l'événement reste disponible et porte le résultat)."""
+        return parse_event(await self._get(self.cfg.pm_event_path, pm_event_slug(asset, start)))
 
     async def diagnose(self, ref: MarketRef) -> str:
         """Résumé (champs scalaires pertinents) du marché, pour comprendre un 404 sur le book."""
