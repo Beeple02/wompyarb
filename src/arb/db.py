@@ -108,19 +108,27 @@ async def last_pm_mid(pool, window_id: int, t_end: datetime) -> float | None:
 
 
 async def save_resolution(pool, window_id: int, ks: str | None, pm: str | None,
-                          ks_src: str | None, pm_src: str | None) -> bool:
+                          ks_src: str | None, pm_src: str | None,
+                          ks_strike=None, ks_settle=None, pm_strike=None, pm_settle=None) -> bool:
     complete = ks is not None and pm is not None
     kind = dis_kind(pm, ks) if complete else None
     async with pool.acquire() as c:
         async with c.transaction():
             await c.execute(
-                """INSERT INTO resolutions(window_id,ks_result,pm_result,ks_source,pm_source,dis_kind,complete)
-                   VALUES($1,$2,$3,$4,$5,$6,$7)
+                """INSERT INTO resolutions(window_id,ks_result,pm_result,ks_source,pm_source,dis_kind,complete,
+                       ks_strike,ks_settle,pm_strike,pm_settle)
+                   VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
                    ON CONFLICT (window_id) DO UPDATE SET ks_result=EXCLUDED.ks_result,
                      pm_result=EXCLUDED.pm_result, ks_source=EXCLUDED.ks_source,
                      pm_source=EXCLUDED.pm_source, dis_kind=EXCLUDED.dis_kind,
-                     complete=EXCLUDED.complete, updated_at=now()""",
-                window_id, ks, pm, ks_src, pm_src, kind, complete)
+                     complete=EXCLUDED.complete,
+                     ks_strike=COALESCE(EXCLUDED.ks_strike, resolutions.ks_strike),
+                     ks_settle=COALESCE(EXCLUDED.ks_settle, resolutions.ks_settle),
+                     pm_strike=COALESCE(EXCLUDED.pm_strike, resolutions.pm_strike),
+                     pm_settle=COALESCE(EXCLUDED.pm_settle, resolutions.pm_settle),
+                     updated_at=now()""",
+                window_id, ks, pm, ks_src, pm_src, kind, complete,
+                ks_strike, ks_settle, pm_strike, pm_settle)
             if complete:
                 for t in await c.fetch(
                         "SELECT id,direction,n,vwap_pm,vwap_ks,fees_total FROM paper_trades "
