@@ -27,7 +27,7 @@ class Config:
     lam: float = 0.0
 
     ks_fee_coef: float = 0.07
-    pm_fee_coef: float = 0.07
+    pm_fee_coef: float = 0.095   # feeCoefficient lu dans l'API Polymarket US (formule supposée: coef*p*(1-p)*N)
 
     kalshi_base: str = "https://api.elections.kalshi.com/trade-api/v2"
     pm_base: str = "https://gateway.polymarket.us"
