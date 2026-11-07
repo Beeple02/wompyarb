@@ -48,6 +48,10 @@ def parse_result(js: dict) -> str | None:
     return None
 
 
+_DIAG_HINTS = ("active", "closed", "archived", "state", "status", "tradable", "accepting", "orderbook",
+               "enable", "open", "start", "end", "resolved", "liquidity", "volume")
+
+
 class PolymarketClient:
     def __init__(self, cfg: Config, http: httpx.AsyncClient):
         self.cfg, self.http = cfg, http
@@ -78,3 +82,14 @@ class PolymarketClient:
 
     async def fetch_result(self, ref: MarketRef) -> str | None:
         return parse_result(await self._get(self.cfg.pm_market_path, ref.ident))
+
+    async def diagnose(self, ref: MarketRef) -> str:
+        """Résumé (champs scalaires pertinents) du marché, pour comprendre un 404 sur le book."""
+        try:
+            js = await self._get(self.cfg.pm_market_path, ref.ident)
+            m = js.get("market", js) if isinstance(js, dict) else {}
+            keep = {k: v for k, v in m.items()
+                    if any(h in k.lower() for h in _DIAG_HINTS) and not isinstance(v, (dict, list))}
+            return "market=" + json.dumps(keep, default=str)[:600]
+        except Exception as e:  # diagnostic seulement : ne doit jamais casser le tick
+            return f"market_fetch_error={e!r}"[:200]
