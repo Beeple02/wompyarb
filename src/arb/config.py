@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 def _b(name: str, default: str) -> bool:
@@ -40,6 +40,11 @@ class Config:
     resolve_delay_s: float = 75
     log_level: str = "INFO"
 
+    api_id: str = field(default="", repr=False)
+    api_key: str = field(default="", repr=False)
+    port: int = 8080
+    api_cors: str = "*"
+
 
 def load() -> Config:
     g = os.getenv
@@ -69,4 +74,8 @@ def load() -> Config:
         retention_days=int(g("RETENTION_DAYS", d.retention_days)),
         resolve_delay_s=float(g("RESOLVE_DELAY_S", d.resolve_delay_s)),
         log_level=g("LOG_LEVEL", d.log_level),
+        api_id=g("API_ID", ""),
+        api_key=g("API_KEY", ""),
+        port=int(g("PORT", d.port)),
+        api_cors=g("API_CORS_ORIGINS", d.api_cors),
     )
