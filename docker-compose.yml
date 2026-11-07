@@ -1,0 +1,12 @@
+# Dev local : docker compose up -d db && export DATABASE_URL=postgresql://arb:arb@localhost:5432/arb
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: arb
+      POSTGRES_PASSWORD: arb
+      POSTGRES_DB: arb
+    ports: ["5432:5432"]
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+volumes:
+  pgdata:
