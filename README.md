@@ -6,7 +6,9 @@ résolu pareil. Aucun ordre n'est jamais envoyé (endpoints de lecture uniquemen
 
 ## Ce qu'il faut croire (et ne pas croire)
 
-- **`gross` / `net` / `net_bps` ne sont PAS un profit espéré.** `gross = 1 − (a + b)` est l'écart de
+- **`gross` / `net` / `net_bps` ne sont un profit que si les deux venues résolvent pareil** (ce que 0.3.0 permet de vérifier).
+  Avant cette vérification, ne les lis pas comme un profit espéré.
+- Détail historique : `gross = 1 − (a + b)` est l'écart de
   prix entre venues. Si chaque venue price correctement sa propre résolution, l'espérance de
   payout du trade vaut la somme des deux prix : zéro avant fees. L'écart n'est « gagné » que si les
   deux résolutions concordent ; il rémunère (ou pas) le risque de désaccord.
@@ -14,12 +16,18 @@ résolu pareil. Aucun ordre n'est jamais envoyé (endpoints de lecture uniquemen
   (`/api/stats/pnl`, `python -m arb.report`), pas `net_bps`.
 - `p̂_dis` (taux de désaccord, `/api/stats/dis`) ne compte que les résolutions `official/official`.
 
-| Sujet | Hypothèse | Statut |
+| Sujet | Constat | Statut |
 |---|---|---|
-| Kalshi résolution | moyenne 60 s de BRTI à t₁ vs à t₀, égalité → YES | vu sur BTC ; ETH/SOL/XRP non vérifiés |
-| Polymarket résolution | Chainlink, point-in-time, `>=` → Up | vu sur l'international ; polymarket.us à lire |
-| Endpoints Polymarket US | `/v1/events/slug/..`, `/v1/markets/{slug}/book` | confirmés en prod (200) |
-| Fees Polymarket | placeholder `0.07·p(1-p)·N` | **à remplacer par la vraie grille** |
+| Kalshi résolution | moyenne de 60 s de l'indice CF Benchmarks (BRTI, ETHUSD_RTI...) à t₁ vs t₀, égalité → YES | vu sur BTC ; autres actifs à vérifier |
+| Polymarket US résolution | **même indice et même méthode** : 60 prix de l'indice RTI dans la dernière minute, moyenne arrondie à 2 décimales, `>=` → Up | **lu dans la règle du marché** (BTC et ETH) ; SOL/XRP à vérifier |
+| Côté Up/Down Polymarket | `Yes` = côté long = Up (`marketSides[].long`) ; le book public est supposé être celui du côté long | cohérent, à confirmer par la répartition des payouts |
+| Endpoint résultat Polymarket | `/v1/markets/slug/{slug}` renvoie 404 ; **`/v1/events/slug/{event}` porte le résultat** (`status`, `outcomePrices`, `priceToBeat`, `settlementPrice`) | utilisé par le résolveur depuis 0.3.0 |
+| Fees Polymarket | `feeCoefficient` = 0.095 lu dans l'API ; formule `coef·p·(1−p)·N` supposée | formule à confirmer |
+
+**Conséquence** : l'hypothèse « les deux venues résolvent différemment (Chainlink vs BRTI) » du premier
+spec ne tient plus pour BTC/ETH sur polymarket.us. `p_dis` est probablement proche de 0 ; la table
+`resolutions` stocke maintenant `pm_strike`, `pm_settle`, `ks_strike`, `ks_settle` pour le mesurer
+directement (`/api/stats/basis`).
 
 ## Version du moteur, protection et wipe de la DB
 
@@ -48,7 +56,7 @@ Auth : en-têtes `X-API-Id` et `X-API-Key` (= variables `API_ID` / `API_KEY`). S
 | `GET /api/signals?asset=&status=&minutes=&limit=` | signaux |
 | `GET /api/trades?asset=&status=&limit=` | paper trades (écart, P&L/contrat, résolution) |
 | `GET /api/resolutions?asset=&limit=` | résolutions |
-| `GET /api/stats/dis` · `/stats/pnl` · `/stats/signals?hours=` | p̂_dis + IC, P&L (par actif, par écart, payouts, equity curve), comptes de signaux |
+| `GET /api/stats/dis` · `/stats/pnl` · `/stats/signals?hours=` · `/stats/basis?limit=` | p̂_dis + IC, P&L (par actif, par écart, payouts, equity curve), comptes de signaux, écart des valeurs de référence entre venues |
 | `GET /api/logs?level=&contains=&after_id=&limit=` | logs en mémoire (3000 dernières lignes) |
 | `GET /api/audit?limit=` | journal d'audit |
 | `POST /api/admin/{protect,unprotect,wipe}` | voir ci-dessus |
