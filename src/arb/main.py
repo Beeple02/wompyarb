@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 
 import httpx
 
-from . import db, stats, windows
+from . import api, db, logbuf, maintenance, stats, windows
 from .config import Config, load
 from .engine import evaluate
 from .venues.kalshi import KalshiClient
@@ -30,6 +30,19 @@ class DisCache:
     def get(self, asset: str) -> stats.DisEstimate:
         n, k1, k2 = self.data.get(asset, (0, 0, 0))
         return stats.estimate(n, k1, k2, self.cfg.prior_p_dis, self.cfg.prior_strength)
+
+
+class State:
+    """Etat partagé entre le collecteur et l'API."""
+
+    def __init__(self, cfg: Config):
+        self.started_at = time.time()
+        self.known: dict = {}
+        self.dis_cache = DisCache(cfg)
+
+    def reset_caches(self) -> None:
+        self.known.clear()
+        self.dis_cache.data, self.dis_cache.ts = {}, 0.0
 
 
 async def tick_asset(asset, cfg, pool, kal, pmc, known, dis_cache):
@@ -67,10 +80,9 @@ async def tick_asset(asset, cfg, pool, kal, pmc, known, dis_cache):
                      asset, ev.direction, ev.n, ev.vwap_pm, ev.vwap_ks, ev.net, ev.net_bps)
 
 
-async def collector_loop(cfg, pool, http):
+async def collector_loop(cfg, pool, http, state):
     kal, pmc = KalshiClient(cfg, http), PolymarketClient(cfg, http)
-    known: dict = {}
-    dis_cache = DisCache(cfg)
+    known, dis_cache = state.known, state.dis_cache
     while True:
         t0 = time.monotonic()
         try:
@@ -128,15 +140,22 @@ async def prune_loop(cfg, pool):
 async def main() -> None:
     cfg = load()
     logging.basicConfig(level=cfg.log_level, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    for noisy in ("httpx", "httpcore"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
+    logbuf.install()
     if not cfg.database_url:
         raise SystemExit("DATABASE_URL manquant")
     pool = await db.connect(cfg.database_url)
     await db.init(pool)
-    await db.audit(pool, "main", "start", {"assets": cfg.assets, "paper_size": cfg.paper_size})
+    action = await maintenance.startup(pool)   # wipe auto si version changée et DB non protégée
+    await db.audit(pool, "main", "start", {"assets": cfg.assets, "paper_size": cfg.paper_size,
+                                           "maintenance": action})
+    state = State(cfg)
+    await api.start(cfg, pool, state)
     limits = httpx.Limits(max_connections=20, max_keepalive_connections=10)
     async with httpx.AsyncClient(timeout=httpx.Timeout(5.0), limits=limits,
                                  headers={"User-Agent": "arbwatch-paper/0.1"}) as http:
-        await asyncio.gather(collector_loop(cfg, pool, http), resolver_loop(cfg, pool, http),
+        await asyncio.gather(collector_loop(cfg, pool, http, state), resolver_loop(cfg, pool, http),
                              prune_loop(cfg, pool))
 
 
