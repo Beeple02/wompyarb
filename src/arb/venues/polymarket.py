@@ -57,17 +57,8 @@ def _json_list(v):
     return v
 
 
-def parse_event(js: dict) -> dict | None:
-    """Résultat d'un événement up/down Polymarket US (endpoint /v1/events/slug/{slug}).
-
-    Structure observée : event.markets[0] avec status MARKET_STATUS_RESOLVED, outcomes ["Yes","No"],
-    outcomePrices ["0","1"] (Yes = Up = côté long) et assetPriceTerms.{priceToBeat, settlementPrice}.
-    Le résultat n'est renvoyé qu'une fois le marché résolu."""
-    ev = js.get("event", js) if isinstance(js, dict) else {}
-    markets = ev.get("markets") if isinstance(ev, dict) else None
-    m = markets[0] if isinstance(markets, list) and markets and isinstance(markets[0], dict) else None
-    if m is None:
-        return None
+def parse_market(m: dict) -> dict:
+    """Statut, résultat (Yes = Up/above) et valeurs de référence d'UN marché (objet markets[i])."""
     status = str(m.get("status", ""))
     terms = m.get("assetPriceTerms") or {}
     result = None
@@ -81,6 +72,18 @@ def parse_event(js: dict) -> dict | None:
             result = None
     return {"result": result, "strike": num(terms.get("priceToBeat")),
             "settle": num(terms.get("settlementPrice")), "status": status}
+
+
+def parse_event(js: dict) -> dict | None:
+    """Résultat d'un événement up/down Polymarket US (endpoint /v1/events/slug/{slug}).
+
+    Structure observée : event.markets[0] avec status MARKET_STATUS_RESOLVED, outcomes ["Yes","No"],
+    outcomePrices ["0","1"] (Yes = Up = côté long) et assetPriceTerms.{priceToBeat, settlementPrice}.
+    Le résultat n'est renvoyé qu'une fois le marché résolu."""
+    ev = js.get("event", js) if isinstance(js, dict) else {}
+    markets = ev.get("markets") if isinstance(ev, dict) else None
+    m = markets[0] if isinstance(markets, list) and markets and isinstance(markets[0], dict) else None
+    return parse_market(m) if m is not None else None
 
 
 _DIAG_HINTS = ("active", "closed", "archived", "state", "status", "tradable", "accepting", "orderbook",
@@ -117,6 +120,10 @@ class PolymarketClient:
 
     async def fetch_result(self, ref: MarketRef) -> str | None:
         return parse_result(await self._get(self.cfg.pm_market_path, ref.ident))
+
+    async def fetch_event(self, slug: str) -> dict:
+        """JSON brut d'un événement (marchés journaliers : un événement = une échelle de seuils)."""
+        return await self._get(self.cfg.pm_event_path, slug)
 
     async def fetch_event_result(self, asset: str, start: datetime) -> dict | None:
         """Résultat via l'endpoint ÉVÉNEMENT (le endpoint marché /v1/markets/slug/.. renvoie 404 après
