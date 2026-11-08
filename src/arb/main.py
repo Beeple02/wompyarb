@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 
 import httpx
 
-from . import api, db, logbuf, maintenance, stats, windows
+from . import api, daily, db, logbuf, maintenance, stats, windows
 from .config import Config, load
 from .engine import evaluate
 from .venues.kalshi import KalshiClient
@@ -38,12 +38,14 @@ class State:
     def __init__(self, cfg: Config):
         self.started_at = time.time()
         self.known: dict = {}
+        self.daily_stats: dict = {}   # asset -> dernier état du cycle journalier (exposé par /api/daily/overview)
         self.pm_404: dict = {}   # (asset, t_start) -> nb de 404 consécutifs sur le book Polymarket
         self.dis_cache = DisCache(cfg)
 
     def reset_caches(self) -> None:
         self.known.clear()
         self.pm_404.clear()
+        self.daily_stats.clear()
         self.dis_cache.data, self.dis_cache.ts = {}, 0.0
 
 
@@ -216,9 +218,14 @@ async def main() -> None:
     limits = httpx.Limits(max_connections=20, max_keepalive_connections=10)
     async with httpx.AsyncClient(timeout=httpx.Timeout(5.0), limits=limits,
                                  headers={"User-Agent": "arbwatch-paper/0.1"}) as http:
-        await asyncio.gather(collector_loop(cfg, pool, http, state), resolver_loop(cfg, pool, http),
-                             prune_loop(cfg, pool))
+        tasks = [collector_loop(cfg, pool, http, state), resolver_loop(cfg, pool, http),
+                 prune_loop(cfg, pool)]
+        if cfg.daily_enabled:
+            tasks += [daily.daily_loop(cfg, pool, http, state), daily.daily_resolver_loop(cfg, pool, http)]
+        await asyncio.gather(*tasks)
 
 
+if __name__ == "__main__":
+    asyncio.run(main())
 if __name__ == "__main__":
     asyncio.run(main())
