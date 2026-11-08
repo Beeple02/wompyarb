@@ -14,7 +14,8 @@ from .version import ENGINE_VERSION
 
 log = logging.getLogger("arb.maintenance")
 
-WIPE_TABLES = "quotes, signals, paper_trades, resolutions, windows"   # audit_log, assets, meta gardés
+WIPE_TABLES = ("quotes, signals, paper_trades, resolutions, windows, "
+               "daily_signals, daily_trades, daily_resolutions, daily_pairs, daily_events")   # audit_log, assets, meta gardés
 
 
 def decide(stored_version: str | None, current_version: str, protected: bool) -> str:
