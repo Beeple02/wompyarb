@@ -29,6 +29,30 @@ spec ne tient plus pour BTC/ETH sur polymarket.us. `p_dis` est probablement proc
 `resolutions` stocke maintenant `pm_strike`, `pm_settle`, `ks_strike`, `ks_settle` pour le mesurer
 directement (`/api/stats/basis`).
 
+## Marchés journaliers above/below (0.4.0)
+
+Kalshi (`KXBTCD`, `KXETHD`, `KXSOLD`, `KXXRPD`) et Polymarket US (`{asset}-above-day-AAAA-MM-JJ`) listent des
+échelles de seuils « $X or above » réglées sur la moyenne de 60 prix de l'indice CF Benchmarks dans la dernière
+minute avant 17:00 ET (22:00Z en hiver). Mêmes règles, mêmes heures : **un seuil identique = le même événement**.
+Yes d'un côté + No de l'autre paie exactement 1 si les deux résolvent pareil.
+
+Boucle (`daily.py`) :
+1. **Scan** toutes les 10 min : marchés Kalshi ouverts (groupés par événement, heure déduite du ticker
+   `KXBTCD-26NOV0817` = 8 nov 17:00 New York) + événements Polymarket des 3 prochains jours ; ne garde que les
+   couples dont l'heure de règlement concorde (±120 s) et dont le seuil est identique.
+2. **Quotes** toutes les 20 s, seulement pour les seuils proches de la monnaie (prix Kalshi entre 0.03 et 0.97) :
+   lit les deux books, évalue (même calcul de VWAP et de fees que les 15 min), ouvre au plus 1 paper trade par seuil.
+   Pas d'entrée dans les 10 dernières minutes avant le règlement.
+3. **Résolution** après 17:00 ET : lit les résultats officiels des deux venues, règle les trades.
+Quand l'horloge passe au jour suivant, le scan suivant trouve les nouveaux événements : la boucle repart seule.
+
+Points de vigilance : arrondi des deux venues (Kalshi « above 73499.99 » contre Polymarket « moyenne arrondie à
+2 décimales ≥ 73 500 ») : écart possible sur une fenêtre de 0,01 $, mesuré par `daily_resolutions.dis_kind` ;
+capital immobilisé jusqu'à 24 h par trade (le ROC se lit par jour, pas par 15 min) ; formats JSON des événements
+journaliers non encore observés : `scripts/probe_daily.py` affiche le scan sans base de données.
+
+Routes : `/api/daily/overview`, `/api/daily/pairs`, `/api/daily/signals`, `/api/daily/trades`, `/api/daily/stats`.
+
 ## Version du moteur, protection et wipe de la DB
 
 - `src/arb/version.py` : `ENGINE_VERSION`. On l'incrémente à chaque patch moteur.
@@ -57,6 +81,7 @@ Auth : en-têtes `X-API-Id` et `X-API-Key` (= variables `API_ID` / `API_KEY`). S
 | `GET /api/trades?asset=&status=&limit=` | paper trades (écart, P&L/contrat, résolution) |
 | `GET /api/resolutions?asset=&limit=` | résolutions |
 | `GET /api/stats/dis` · `/stats/pnl` · `/stats/signals?hours=` · `/stats/basis?limit=` | p̂_dis + IC, P&L (par actif, par écart, payouts, equity curve), comptes de signaux, écart des valeurs de référence entre venues |
+| `GET /api/daily/overview` · `/daily/pairs` · `/daily/signals` · `/daily/trades` · `/daily/stats` | marchés journaliers (voir section dédiée) |
 | `GET /api/logs?level=&contains=&after_id=&limit=` | logs en mémoire (3000 dernières lignes) |
 | `GET /api/audit?limit=` | journal d'audit |
 | `POST /api/admin/{protect,unprotect,wipe}` | voir ci-dessus |
