@@ -40,6 +40,19 @@ class Config:
     resolve_delay_s: float = 75
     log_level: str = "INFO"
 
+    daily_enabled: bool = True
+    daily_size: float = 10
+    daily_poll_s: float = 20
+    daily_scan_interval_s: float = 600
+    daily_min_edge_bps: float = 50
+    daily_no_entry_last_s: float = 600
+    daily_band_lo: float = 0.03
+    daily_band_hi: float = 0.97
+    daily_concurrency: int = 6
+    daily_days_ahead: int = 3
+    daily_settle_tol_s: float = 120
+    daily_resolve_delay_s: float = 120
+
     api_id: str = field(default="", repr=False)
     api_key: str = field(default="", repr=False)
     port: int = 8080
@@ -74,6 +87,18 @@ def load() -> Config:
         retention_days=int(g("RETENTION_DAYS", d.retention_days)),
         resolve_delay_s=float(g("RESOLVE_DELAY_S", d.resolve_delay_s)),
         log_level=g("LOG_LEVEL", d.log_level),
+        daily_enabled=_b("DAILY_ENABLED", "true"),
+        daily_size=float(g("DAILY_SIZE", d.daily_size)),
+        daily_poll_s=float(g("DAILY_POLL_S", d.daily_poll_s)),
+        daily_scan_interval_s=float(g("DAILY_SCAN_INTERVAL_S", d.daily_scan_interval_s)),
+        daily_min_edge_bps=float(g("DAILY_MIN_EDGE_BPS", d.daily_min_edge_bps)),
+        daily_no_entry_last_s=float(g("DAILY_NO_ENTRY_LAST_S", d.daily_no_entry_last_s)),
+        daily_band_lo=float(g("DAILY_BAND_LO", d.daily_band_lo)),
+        daily_band_hi=float(g("DAILY_BAND_HI", d.daily_band_hi)),
+        daily_concurrency=int(g("DAILY_CONCURRENCY", d.daily_concurrency)),
+        daily_days_ahead=int(g("DAILY_DAYS_AHEAD", d.daily_days_ahead)),
+        daily_settle_tol_s=float(g("DAILY_SETTLE_TOL_S", d.daily_settle_tol_s)),
+        daily_resolve_delay_s=float(g("DAILY_RESOLVE_DELAY_S", d.daily_resolve_delay_s)),
         api_id=g("API_ID", ""),
         api_key=g("API_KEY", ""),
         port=int(g("PORT", d.port)),
