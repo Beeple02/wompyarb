@@ -81,3 +81,52 @@ ALTER TABLE resolutions ADD COLUMN IF NOT EXISTS ks_strike DOUBLE PRECISION;
 ALTER TABLE resolutions ADD COLUMN IF NOT EXISTS ks_settle DOUBLE PRECISION;
 ALTER TABLE resolutions ADD COLUMN IF NOT EXISTS pm_strike DOUBLE PRECISION;
 ALTER TABLE resolutions ADD COLUMN IF NOT EXISTS pm_settle DOUBLE PRECISION;
+
+-- Marchés journaliers above/below (Kalshi KX*D <-> Polymarket *-above-day-*)
+CREATE TABLE IF NOT EXISTS daily_events (
+  id BIGSERIAL PRIMARY KEY,
+  asset TEXT NOT NULL,
+  settle_ts TIMESTAMPTZ NOT NULL,
+  ks_event TEXT, pm_event TEXT,
+  n_ks INT, n_pm INT, n_overlap INT,
+  scanned_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (asset, settle_ts)
+);
+CREATE TABLE IF NOT EXISTS daily_pairs (
+  id BIGSERIAL PRIMARY KEY,
+  event_id BIGINT NOT NULL REFERENCES daily_events(id),
+  asset TEXT NOT NULL,
+  settle_ts TIMESTAMPTZ NOT NULL,
+  threshold DOUBLE PRECISION NOT NULL,
+  ks_ticker TEXT NOT NULL, pm_slug TEXT NOT NULL,
+  active BOOLEAN NOT NULL DEFAULT TRUE,
+  UNIQUE (event_id, threshold)
+);
+CREATE TABLE IF NOT EXISTS daily_signals (
+  id BIGSERIAL PRIMARY KEY,
+  pair_id BIGINT NOT NULL REFERENCES daily_pairs(id),
+  ts TIMESTAMPTZ NOT NULL,
+  secs_to_settle DOUBLE PRECISION,
+  status TEXT NOT NULL, reason TEXT, direction TEXT, n DOUBLE PRECISION,
+  vwap_pm DOUBLE PRECISION, vwap_ks DOUBLE PRECISION, fees_total DOUBLE PRECISION,
+  cost_per DOUBLE PRECISION, gross DOUBLE PRECISION, net DOUBLE PRECISION, net_bps DOUBLE PRECISION
+);
+CREATE INDEX IF NOT EXISTS daily_signals_ts ON daily_signals (ts);
+CREATE TABLE IF NOT EXISTS daily_trades (
+  id BIGSERIAL PRIMARY KEY,
+  pair_id BIGINT NOT NULL UNIQUE REFERENCES daily_pairs(id),
+  ts TIMESTAMPTZ NOT NULL,
+  direction TEXT NOT NULL, n DOUBLE PRECISION NOT NULL,
+  vwap_pm DOUBLE PRECISION, vwap_ks DOUBLE PRECISION, fees_total DOUBLE PRECISION,
+  expected_net DOUBLE PRECISION,
+  status TEXT NOT NULL DEFAULT 'open',
+  payout DOUBLE PRECISION, pnl DOUBLE PRECISION, settled_at TIMESTAMPTZ
+);
+CREATE TABLE IF NOT EXISTS daily_resolutions (
+  pair_id BIGINT PRIMARY KEY REFERENCES daily_pairs(id),
+  ks_result TEXT, pm_result TEXT,
+  ks_settle DOUBLE PRECISION, pm_settle DOUBLE PRECISION,
+  dis_kind TEXT,
+  complete BOOLEAN NOT NULL DEFAULT FALSE,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
