@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from datetime import datetime
@@ -46,9 +47,33 @@ class KalshiClient:
         self.cfg, self.http = cfg, http
 
     async def _get(self, path: str, **params) -> dict:
-        r = await self.http.get(self.cfg.kalshi_base + path, params=params or None)
-        r.raise_for_status()
-        return r.json()
+        for attempt in range(3):
+            r = await self.http.get(self.cfg.kalshi_base + path, params=params or None)
+            if r.status_code == 429 and attempt < 2:   # trop de requêtes : on attend puis on réessaie
+                try:
+                    wait = float(r.headers.get("Retry-After", 1.0))
+                except ValueError:
+                    wait = 1.0
+                await asyncio.sleep(min(wait, 5.0) * (attempt + 1))
+                continue
+            r.raise_for_status()
+            return r.json()
+        raise RuntimeError("unreachable")
+
+    async def list_markets(self, series: str, status: str = "open", max_pages: int = 5) -> list[dict]:
+        """Tous les marchés ouverts d'une série (pagination par curseur)."""
+        out: list[dict] = []
+        cursor = None
+        for _ in range(max_pages):
+            params = {"series_ticker": series, "status": status, "limit": 1000}
+            if cursor:
+                params["cursor"] = cursor
+            js = await self._get("/markets", **params)
+            out += js.get("markets") or []
+            cursor = js.get("cursor")
+            if not cursor:
+                break
+        return out
 
     async def discover(self, asset: str, start: datetime, end: datetime) -> MarketRef | None:
         e = int(end.timestamp())
