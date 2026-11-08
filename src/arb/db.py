@@ -157,6 +157,7 @@ async def prune(pool, days: int) -> None:
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     async with pool.acquire() as c:
         await c.execute("DELETE FROM quotes WHERE ts_recv < $1", cutoff)
+        await c.execute("DELETE FROM daily_signals WHERE ts < $1", cutoff)
         await c.execute("DELETE FROM signals WHERE ts < $1 AND status IN ('REJECT_STALE','REJECT_DEPTH')", cutoff)
 
 
