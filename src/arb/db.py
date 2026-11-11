@@ -48,15 +48,14 @@ async def get_or_create_window(pool, asset: str, start: datetime, end: datetime,
             asset, start, end, ks_ticker, pm_slug)
 
 
-async def insert_quote(pool, window_id: int, book: Book) -> None:
-    ladders = {"up": book.asks_up[:5], "down": book.asks_down[:5]}
+async def insert_quote(pool, window_id: int, book: Book, with_ladders: bool = False) -> None:
+    ladders = json.dumps({"up": book.asks_up[:5], "down": book.asks_down[:5]}) if with_ladders else None
     async with pool.acquire() as c:
         await c.execute(
             """INSERT INTO quotes(window_id,venue,ts_recv,best_ask_up,best_ask_down,depth_up,depth_down,ladders)
                VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb)""",
             window_id, book.venue, datetime.fromtimestamp(book.ts_recv, tz=timezone.utc),
-            book.best("up"), book.best("down"), book.depth("up"), book.depth("down"),
-            json.dumps(ladders))
+            book.best("up"), book.best("down"), book.depth("up"), book.depth("down"), ladders)
 
 
 async def insert_signal(pool, window_id: int, ev: Evaluation, secs_to_close: float) -> None:
@@ -158,6 +157,7 @@ async def prune(pool, days: int) -> None:
     async with pool.acquire() as c:
         await c.execute("DELETE FROM quotes WHERE ts_recv < $1", cutoff)
         await c.execute("DELETE FROM daily_signals WHERE ts < $1", cutoff)
+        await c.execute("DELETE FROM weather_signals WHERE ts < $1", cutoff)
         await c.execute("DELETE FROM signals WHERE ts < $1 AND status IN ('REJECT_STALE','REJECT_DEPTH')", cutoff)
 
 
