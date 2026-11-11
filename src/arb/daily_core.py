@@ -167,19 +167,23 @@ def ks_mid(m: dict) -> float | None:
 
 # ---------- évaluation ----------
 def evaluate_pair(pm: Book, ks: Book, n: float, secs_to_settle: float, now_ts: float,
-                  cfg: Config) -> Evaluation:
-    """Même seuil des deux côtés : Yes d'un côté + No de l'autre paie exactement 1 si les deux résolvent pareil."""
+                  cfg: Config, directions: dict | None = None, min_edge_bps: float | None = None,
+                  no_entry_last_s: float | None = None) -> Evaluation:
+    """Même seuil des deux côtés : Yes d'un côté + No de l'autre paie exactement 1 si les deux résolvent pareil.
+    `directions` restreint les directions évaluées (météo : seulement le côté qui paie toujours >= 1)."""
+    min_edge = cfg.daily_min_edge_bps if min_edge_bps is None else min_edge_bps
+    cutoff = cfg.daily_no_entry_last_s if no_entry_last_s is None else no_entry_last_s
     if (now_ts - pm.ts_recv > cfg.max_stale_s or now_ts - ks.ts_recv > cfg.max_stale_s
             or abs(pm.ts_recv - ks.ts_recv) > cfg.max_skew_s):
         return Evaluation("REJECT_STALE", "stale_or_skew")
     best: Evaluation | None = None
-    for direction, (pm_side, ks_side) in DIRECTIONS.items():
+    for direction, (pm_side, ks_side) in (directions or DIRECTIONS).items():
         pm_lad = pm.asks_up if pm_side == "up" else pm.asks_down
         ks_lad = ks.asks_up if ks_side == "up" else ks.asks_down
         a, b = vwap(pm_lad, n), vwap(ks_lad, n)
         if a is None or b is None:
             continue
-        fees = pm_fee(a, n, cfg.pm_fee_coef) + kalshi_fee(b, n, cfg.ks_fee_coef)
+        fees = pm_fee(a, n, cfg.pm_fee_eff) + kalshi_fee(b, n, cfg.ks_fee_coef)
         cost_per = a + b + fees / n
         net = 1.0 - cost_per
         ev = Evaluation("OBSERVE", direction=direction, n=n, vwap_pm=a, vwap_ks=b, fees_total=fees,
@@ -189,8 +193,8 @@ def evaluate_pair(pm: Book, ks: Book, n: float, secs_to_settle: float, now_ts: f
             best = ev
     if best is None:
         return Evaluation("REJECT_DEPTH", "depth<n")
-    if best.net_bps >= cfg.daily_min_edge_bps:
-        if secs_to_settle < cfg.daily_no_entry_last_s:
+    if best.net_bps >= min_edge:
+        if secs_to_settle < cutoff:
             best.reason = "last_minutes_regime"
         else:
             best.status = "ACTIONABLE"
