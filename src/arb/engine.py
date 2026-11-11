@@ -82,7 +82,7 @@ def evaluate(pm: Book, ks: Book, n: float, secs_to_close: float, now_ts: float,
         a, b = vwap(pm_lad, n), vwap(ks_lad, n)
         if a is None or b is None:
             continue
-        fees = pm_fee(a, n, cfg.pm_fee_coef) + kalshi_fee(b, n, cfg.ks_fee_coef)
+        fees = pm_fee(a, n, cfg.pm_fee_eff) + kalshi_fee(b, n, cfg.ks_fee_coef)
         cost_per = a + b + fees / n
         gross = 1.0 - (a + b)
         # Si les désaccords sont asymétriques, une direction a une espérance > 1, l'autre < 1.
