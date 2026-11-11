@@ -53,6 +53,42 @@ journaliers non encore observés : `scripts/probe_daily.py` affiche le scan sans
 
 Routes : `/api/daily/overview`, `/api/daily/pairs`, `/api/daily/signals`, `/api/daily/trades`, `/api/daily/stats`.
 
+## Marchés météo : pluie par ville (0.5.0)
+
+Kalshi `KXRAIN` (« Where will it rain today ? ») <-> Polymarket **international** (polymarket.com : API publique Gamma +
+CLOB, distincte de polymarket.us). Kalshi n'a pas de plateforme « internationale » séparée : `api.elections.kalshi.com`
+sert tout le monde, le côté Kalshi est inchangé. Le moteur crypto existant reste, lui, branché sur Polymarket US.
+
+Le scanner n'autorise un trade qu'après avoir vérifié l'équivalence des deux contrats :
+- **ville + station NWS** (codes `CLIxxx`, `issuedby=`, ICAO lus dans les règles) : `match` / `mismatch` / `assumed`.
+  `assumed` (une règle sans code) n'est négociable que pour les villes listées dans `WEATHER_TRUSTED_CITIES` ;
+- **jour climatologique** (minuit à minuit, heure locale standard) ;
+- **trace de pluie « T »** : lue dans les règles des deux côtés. Si elles diffèrent, seule la direction qui paie
+  toujours >= 1 est évaluée (Yes là où la trace compte + No sur l'autre : paie 2 les jours de trace, 1 sinon) ;
+- règle illisible ou stations différentes : le couple est listé avec la raison, jamais tradé.
+
+Cycle : scan toutes les 10 min -> books (Kalshi + CLOB) toutes les 30 s -> paper trade au plus 1 par ville et par jour
+-> résolution à partir d'1 h après la fin du jour climatologique (backoff) -> rescan. Priorité au jour en cours
+(seuil d'écart 100 bps aujourd'hui, 300 bps pour demain). Les books vides sont normaux (marchés sans trade) :
+seuls les couples avec une profondeur suffisante des deux côtés produisent une évaluation.
+
+Routes : `/api/weather/overview`, `/candidates` (toutes les villes communes avec verdict et règles), `/signals`,
+`/trades`, `/stats`. `scripts/probe_weather.py` affiche le scan sans base de données.
+
+## Stockage : tenir dans ~500 Mo (0.6.0)
+
+Mesure sur 23 min de collecte avant correctif : ≈ 290 000 cotes/jour (≈ 120 Mo) + ≈ 146 000 signaux/jour (≈ 40 Mo),
+soit ~150 Mo/jour pour le seul 15 min, bien plus avec les marchés journaliers et météo. Désormais :
+- cotes brutes **échantillonnées** (1 toutes les 10 s, sans le détail des 5 niveaux), gardées 24 h ;
+- signaux : `REJECT_*` jamais stockés (comptés dans `signal_counts`, 1 ligne par heure/actif/statut), `OBSERVE` 1 toutes les
+  30 s (120 s pour journalier/météo) sauf quasi-opportunités, `ACTIONABLE`/`UNVERIFIED` toujours ; gardés 3 jours ;
+- trades, résolutions, paires, fenêtres et audit : jamais purgés (quelques Mo) ;
+- garde-fou toutes les 5 min : 70 % du plafond -> purge anticipée ; 90 % -> `TRUNCATE` des cotes et signaux (libère le
+  disque immédiatement). Taille et tables les plus lourdes dans `/api/status` (`db`).
+- `/api/live` lit la dernière évaluation en mémoire ; `/api/stats/signals?scope=crypto15|daily|weather` lit les compteurs
+  agrégés : ils restent exacts malgré l'échantillonnage.
+Estimation en régime établi : < 100 Mo.
+
 ## Version du moteur, protection et wipe de la DB
 
 - `src/arb/version.py` : `ENGINE_VERSION`. On l'incrémente à chaque patch moteur.
@@ -82,6 +118,7 @@ Auth : en-têtes `X-API-Id` et `X-API-Key` (= variables `API_ID` / `API_KEY`). S
 | `GET /api/resolutions?asset=&limit=` | résolutions |
 | `GET /api/stats/dis` · `/stats/pnl` · `/stats/signals?hours=` · `/stats/basis?limit=` | p̂_dis + IC, P&L (par actif, par écart, payouts, equity curve), comptes de signaux, écart des valeurs de référence entre venues |
 | `GET /api/daily/overview` · `/daily/pairs` · `/daily/signals` · `/daily/trades` · `/daily/stats` | marchés journaliers (voir section dédiée) |
+| `GET /api/weather/overview` · `/weather/candidates` · `/weather/signals` · `/weather/trades` · `/weather/stats` | pluie par ville |
 | `GET /api/logs?level=&contains=&after_id=&limit=` | logs en mémoire (3000 dernières lignes) |
 | `GET /api/audit?limit=` | journal d'audit |
 | `POST /api/admin/{protect,unprotect,wipe}` | voir ci-dessus |
