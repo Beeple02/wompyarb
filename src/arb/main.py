@@ -12,8 +12,14 @@ from .config import Config, load
 from .engine import evaluate
 from .venues.kalshi import KalshiClient
 from .venues.polymarket import PolymarketClient
+from .venues.polymarket_intl import PolymarketIntlCrypto
 
 log = logging.getLogger("arb")
+
+
+def make_pm(cfg, http):
+    """Client Polymarket du moteur 15 min : international (défaut) ou US (PM_FLAVOR=us)."""
+    return PolymarketIntlCrypto(cfg, http) if cfg.pm_flavor == "intl" else PolymarketClient(cfg, http)
 
 
 class DisCache:
@@ -70,7 +76,7 @@ async def tick_asset(asset, cfg, pool, kal, pmc, known, dis_cache, state):
         if not ks_ref or not pm_ref:
             log.warning("%s discovery incomplète (kalshi=%s pm=%s)", asset, ks_ref, pm_ref)
             return
-        wid = await db.get_or_create_window(pool, asset, start, end, ks_ref.ident, pm_ref.ident)
+        wid = await db.get_or_create_window(pool, asset, start, end, ks_ref.ident, pm_ref.slug or pm_ref.ident)
         known[key] = (wid, ks_ref, pm_ref)
         for k in [k for k in known if k[1] < start]:
             del known[k]
@@ -93,7 +99,7 @@ async def tick_asset(asset, cfg, pool, kal, pmc, known, dis_cache, state):
             except Exception:
                 body = ""
             since = (datetime.now(timezone.utc) - start).total_seconds()
-            log.info("%s polymarket book 404 à +%.0fs (%s) body=%r | %s", asset, since, pm_ref.ident,
+            log.info("%s polymarket book 404 à +%.0fs (%s) body=%r | %s", asset, since, pm_ref.slug or pm_ref.ident,
                      body, await pmc.diagnose(pm_ref))
     elif key in state.pm_404 and not isinstance(pm_b, Exception):
         n = state.pm_404.pop(key)
@@ -125,7 +131,7 @@ async def tick_asset(asset, cfg, pool, kal, pmc, known, dis_cache, state):
 
 
 async def collector_loop(cfg, pool, http, state):
-    kal, pmc = KalshiClient(cfg, http), PolymarketClient(cfg, http)
+    kal, pmc = KalshiClient(cfg, http), make_pm(cfg, http)
     known, dis_cache = state.known, state.dis_cache
     while True:
         t0 = time.monotonic()
@@ -154,7 +160,7 @@ def implied_result(strike, settle) -> str | None:
 
 
 async def resolver_loop(cfg, pool, http):
-    kal, pmc = KalshiClient(cfg, http), PolymarketClient(cfg, http)
+    kal, pmc = KalshiClient(cfg, http), make_pm(cfg, http)
     from .models import MarketRef
     attempts: dict[int, int] = {}
     next_try: dict[int, float] = {}
