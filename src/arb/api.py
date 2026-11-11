@@ -16,7 +16,7 @@ from decimal import Decimal
 
 from aiohttp import web
 
-from . import db, logbuf, maintenance
+from . import db, logbuf, maintenance, storage
 from .stats import wilson
 from .version import ENGINE_VERSION
 
@@ -131,7 +131,12 @@ async def status(req):
                WHERE q.ts_recv > now() - interval '10 minutes' GROUP BY 1,2 ORDER BY 1,2"""))
         last_res = await c.fetchval("SELECT max(updated_at) FROM resolutions WHERE complete")
         open_trades = await c.fetchval("SELECT count(*) FROM paper_trades WHERE status='open'")
-    return jr({"engine_version": ENGINE_VERSION, "uptime_s": round(time.time() - st.started_at),
+    try:
+        dbinfo = {"size_mb": round(await storage.db_size_mb(req.app["pool"]), 1), "max_mb": cfg.db_max_mb,
+                  "tables": await storage.table_sizes(req.app["pool"])}
+    except Exception as e:
+        dbinfo = {"error": repr(e)}
+    return jr({"engine_version": ENGINE_VERSION, "db": dbinfo, "uptime_s": round(time.time() - st.started_at),
                "db_protected": meta.get("db_protected") == "true", "data_since": meta.get("data_since"),
                "counts_approx": counts, "open_trades": open_trades, "last_quotes": last_q,
                "last_resolution": last_res, "assets": cfg.assets, "now": datetime.now(timezone.utc)})
@@ -145,13 +150,12 @@ async def config(req):
 
 
 async def live(req):
-    """Dernier signal et dernières cotes par actif : panneau temps réel."""
+    """Dernière évaluation par actif (mémoire du moteur) et dernières cotes stockées : panneau temps réel."""
+    st = req.app["state"]
+    now = datetime.now(timezone.utc)
+    sig = [v for v in st.last_signal.values()
+           if (now - datetime.fromisoformat(v["ts"])).total_seconds() < 120]
     async with req.app["pool"].acquire() as c:
-        sig = rows(await c.fetch(
-            """SELECT DISTINCT ON (w.asset) w.asset, s.ts, s.status, s.reason, s.direction, s.n,
-                      s.vwap_pm, s.vwap_ks, s.gross, s.net, s.net_bps, s.p_dis, s.secs_to_close, w.t_end
-               FROM signals s JOIN windows w ON w.id=s.window_id
-               WHERE s.ts > now() - interval '2 minutes' ORDER BY w.asset, s.ts DESC"""))
         quo = rows(await c.fetch(
             """SELECT DISTINCT ON (w.asset, q.venue) w.asset, q.venue, q.ts_recv, q.best_ask_up,
                       q.best_ask_down, q.depth_up, q.depth_down
@@ -265,12 +269,15 @@ async def stats_pnl(req):
 
 
 async def stats_signals(req):
+    """Comptes par statut (table agrégée signal_counts, indépendante de l'échantillonnage des lignes)."""
+    scope = req.query.get("scope", "crypto15")
     async with req.app["pool"].acquire() as c:
         rs = await c.fetch(
-            """SELECT w.asset, s.status, count(*) n, max(s.net_bps) best_bps, avg(s.net_bps) avg_bps
-               FROM signals s JOIN windows w ON w.id=s.window_id
-               WHERE s.ts > now() - make_interval(hours => $1::int) GROUP BY 1,2 ORDER BY 1,2""",
-            qint(req, "hours", 24, hi=168))
+            """SELECT key AS asset, status, sum(n)::bigint AS n, max(best_bps) AS best_bps,
+                      sum(sum_bps) / NULLIF(sum(n), 0) AS avg_bps
+               FROM signal_counts
+               WHERE scope=$1 AND hour >= date_trunc('hour', now()) - make_interval(hours => $2::int)
+               GROUP BY 1,2 ORDER BY 1,2""", scope, qint(req, "hours", 24, hi=168))
     return jr(rows(rs))
 
 
@@ -375,6 +382,75 @@ async def daily_stats_h(req):
     return jr({"by_asset": by_asset, "payouts": payouts, "resolutions": dis})
 
 
+async def weather_overview(req):
+    st = req.app["state"]
+    async with req.app["pool"].acquire() as c:
+        open_trades = await c.fetchval("SELECT count(*) FROM weather_trades WHERE status='open'")
+        pairs = await c.fetchval("SELECT count(*) FROM weather_pairs WHERE active")
+        tradable = await c.fetchval("SELECT count(*) FROM weather_pairs WHERE active AND tradable")
+    return jr({"enabled": req.app["cfg"].weather_enabled, "active_pairs": pairs, "tradable": tradable,
+               "open_trades": open_trades, "cycle": st.weather_stats})
+
+
+async def weather_candidates(req):
+    async with req.app["pool"].acquire() as c:
+        rs = await c.fetch(
+            """SELECT p.id, p.city, p.day, p.day_end, p.ks_ticker, p.pm_slug, p.station_status, p.ks_station,
+                      p.pm_station, p.ks_trace, p.pm_trace, p.safe_direction, p.tradable, p.reason, p.ambiguous,
+                      p.active, p.ks_rules, p.pm_rules,
+                      s.ts AS last_ts, s.status AS last_status, s.direction AS last_direction,
+                      s.vwap_pm AS last_vwap_pm, s.vwap_ks AS last_vwap_ks, s.gross AS last_gross,
+                      s.net_bps AS last_net_bps,
+                      EXISTS(SELECT 1 FROM weather_trades t WHERE t.pair_id=p.id) AS traded
+               FROM weather_pairs p
+               LEFT JOIN LATERAL (SELECT * FROM weather_signals x WHERE x.pair_id=p.id
+                                  ORDER BY x.ts DESC LIMIT 1) s ON TRUE
+               WHERE (NOT $1 OR p.active) ORDER BY p.day, p.city LIMIT $2""",
+            req.query.get("active", "1") != "0", qint(req, "limit", 300, hi=2000))
+    return jr(rows(rs))
+
+
+async def weather_signals_h(req):
+    status_f = req.query.get("status")
+    async with req.app["pool"].acquire() as c:
+        rs = await c.fetch(
+            """SELECT p.city, p.day, s.* FROM weather_signals s JOIN weather_pairs p ON p.id=s.pair_id
+               WHERE s.ts > now() - make_interval(mins => $2::int) AND ($1::text IS NULL OR s.status=$1)
+               ORDER BY s.ts DESC LIMIT $3""",
+            status_f.upper() if status_f else None, qint(req, "minutes", 120, hi=10080),
+            qint(req, "limit", 500, hi=10000))
+    return jr(rows(rs))
+
+
+async def weather_trades_h(req):
+    async with req.app["pool"].acquire() as c:
+        rs = await c.fetch(
+            """SELECT t.*, p.city, p.day, p.day_end, p.safe_direction, (1 - t.vwap_pm - t.vwap_ks) AS gap,
+                      CASE WHEN t.n > 0 THEN t.pnl / t.n END AS pnl_per_contract,
+                      r.pm_result, r.ks_result, r.dis_kind
+               FROM weather_trades t JOIN weather_pairs p ON p.id=t.pair_id
+               LEFT JOIN weather_resolutions r ON r.pair_id=t.pair_id
+               WHERE ($1::text IS NULL OR t.status=$1) ORDER BY t.ts DESC LIMIT $2""",
+            qstr(req, "status"), qint(req, "limit", 200, hi=5000))
+    return jr(rows(rs))
+
+
+async def weather_stats_h(req):
+    async with req.app["pool"].acquire() as c:
+        summary = rows(await c.fetch(
+            """SELECT count(*) n, sum(t.pnl) pnl, avg(t.pnl) mean, stddev_samp(t.pnl) sd,
+                      avg((t.pnl>0)::int) win, sum(t.n*(t.vwap_pm+t.vwap_ks)+t.fees_total) capital
+               FROM weather_trades t WHERE t.status='settled'"""))
+        payouts = rows(await c.fetch(
+            """SELECT (payout / n) AS payout_per_contract, count(*) n FROM weather_trades
+               WHERE status='settled' GROUP BY 1 ORDER BY 1"""))
+        dis = rows(await c.fetch(
+            """SELECT p.city, count(*) n, count(*) FILTER (WHERE r.dis_kind <> 'agree') disagreements
+               FROM weather_resolutions r JOIN weather_pairs p ON p.id=r.pair_id
+               WHERE r.complete GROUP BY 1 ORDER BY 1"""))
+    return jr({"summary": summary[0] if summary else None, "payouts": payouts, "by_city": dis})
+
+
 async def logs_h(req):
     return jr(logbuf.tail(qint(req, "limit", 200, hi=3000), req.query.get("level", "INFO"),
                           req.query.get("contains"), qint(req, "after_id", 0, lo=0, hi=10**12)))
@@ -426,6 +502,9 @@ def create_app(cfg, pool, state) -> web.Application:
     g("/api/daily/overview", daily_overview); g("/api/daily/pairs", daily_pairs_h)
     g("/api/daily/signals", daily_signals_h); g("/api/daily/trades", daily_trades_h)
     g("/api/daily/stats", daily_stats_h)
+    g("/api/weather/overview", weather_overview); g("/api/weather/candidates", weather_candidates)
+    g("/api/weather/signals", weather_signals_h); g("/api/weather/trades", weather_trades_h)
+    g("/api/weather/stats", weather_stats_h)
     p = app.router.add_post
     p("/api/admin/protect", admin_protect); p("/api/admin/unprotect", admin_unprotect)
     p("/api/admin/wipe", admin_wipe)
