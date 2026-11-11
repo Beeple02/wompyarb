@@ -84,7 +84,7 @@ def _book(venue, up, down, ts=NOW):
 
 
 def _cfg():
-    return Config(pm_fee_coef=0.0, ks_fee_coef=0.0)
+    return Config(pm_fee_coef=0.0, pm_intl_fee_coef=0.0, ks_fee_coef=0.0)
 
 
 def test_evaluate_pair_actionable_and_regimes():
