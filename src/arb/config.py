@@ -53,6 +53,28 @@ class Config:
     daily_settle_tol_s: float = 120
     daily_resolve_delay_s: float = 120
 
+    weather_enabled: bool = True
+    weather_size: float = 10
+    weather_poll_s: float = 30
+    weather_scan_interval_s: float = 600
+    weather_min_edge_bps: float = 100
+    weather_min_edge_bps_next: float = 300
+    weather_days_ahead: int = 1
+    weather_max_stale_s: float = 10
+    weather_trusted_cities: str = ""
+    weather_resolve_delay_s: float = 3600
+    pm_gamma_base: str = "https://gamma-api.polymarket.com"
+    pm_clob_base: str = "https://clob.polymarket.com"
+
+    quote_store_every_s: float = 10
+    quote_store_ladders: bool = False
+    signal_observe_every_s: float = 30
+    daily_observe_every_s: float = 120
+    weather_observe_every_s: float = 120
+    quotes_retention_hours: float = 24
+    signals_retention_days: float = 3
+    db_max_mb: float = 500
+
     api_id: str = field(default="", repr=False)
     api_key: str = field(default="", repr=False)
     port: int = 8080
@@ -99,6 +121,26 @@ def load() -> Config:
         daily_days_ahead=int(g("DAILY_DAYS_AHEAD", d.daily_days_ahead)),
         daily_settle_tol_s=float(g("DAILY_SETTLE_TOL_S", d.daily_settle_tol_s)),
         daily_resolve_delay_s=float(g("DAILY_RESOLVE_DELAY_S", d.daily_resolve_delay_s)),
+        weather_enabled=_b("WEATHER_ENABLED", "true"),
+        weather_size=float(g("WEATHER_SIZE", d.weather_size)),
+        weather_poll_s=float(g("WEATHER_POLL_S", d.weather_poll_s)),
+        weather_scan_interval_s=float(g("WEATHER_SCAN_INTERVAL_S", d.weather_scan_interval_s)),
+        weather_min_edge_bps=float(g("WEATHER_MIN_EDGE_BPS", d.weather_min_edge_bps)),
+        weather_min_edge_bps_next=float(g("WEATHER_MIN_EDGE_BPS_NEXT", d.weather_min_edge_bps_next)),
+        weather_days_ahead=int(g("WEATHER_DAYS_AHEAD", d.weather_days_ahead)),
+        weather_max_stale_s=float(g("WEATHER_MAX_STALE_S", d.weather_max_stale_s)),
+        weather_trusted_cities=g("WEATHER_TRUSTED_CITIES", d.weather_trusted_cities),
+        weather_resolve_delay_s=float(g("WEATHER_RESOLVE_DELAY_S", d.weather_resolve_delay_s)),
+        pm_gamma_base=g("PM_GAMMA_BASE", d.pm_gamma_base).rstrip("/"),
+        pm_clob_base=g("PM_CLOB_BASE", d.pm_clob_base).rstrip("/"),
+        quote_store_every_s=float(g("QUOTE_STORE_EVERY_S", d.quote_store_every_s)),
+        quote_store_ladders=_b("QUOTE_STORE_LADDERS", "false"),
+        signal_observe_every_s=float(g("SIGNAL_OBSERVE_EVERY_S", d.signal_observe_every_s)),
+        daily_observe_every_s=float(g("DAILY_OBSERVE_EVERY_S", d.daily_observe_every_s)),
+        weather_observe_every_s=float(g("WEATHER_OBSERVE_EVERY_S", d.weather_observe_every_s)),
+        quotes_retention_hours=float(g("QUOTES_RETENTION_HOURS", d.quotes_retention_hours)),
+        signals_retention_days=float(g("SIGNALS_RETENTION_DAYS", d.signals_retention_days)),
+        db_max_mb=float(g("DB_MAX_MB", d.db_max_mb)),
         api_id=g("API_ID", ""),
         api_key=g("API_KEY", ""),
         port=int(g("PORT", d.port)),
