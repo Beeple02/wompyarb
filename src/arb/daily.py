@@ -18,6 +18,7 @@ from datetime import datetime, timedelta, timezone
 import httpx
 
 from . import daily_db as dd
+from . import storage
 from .config import Config
 from .daily_core import (KS_DAILY_SERIES, NY, evaluate_pair, event_of, ks_mid, ks_threshold, match_pairs,
                          parse_ks_event_ticker, parse_pm_daily_event, pm_daily_slug, pm_settle_from_date,
@@ -118,7 +119,13 @@ async def quote_asset(cfg, pool, kal, pmc, asset: str, state) -> None:
         stats["ok"] += 1
         secs = (p["settle_ts"] - datetime.now(timezone.utc)).total_seconds()
         ev = evaluate_pair(pm_b, ks_b, cfg.daily_size, secs, time.time(), cfg)
-        await dd.insert_signal(pool, p["id"], ev, secs)
+        nb = ev.net_bps if ev.direction else None
+        state.counters.add("daily", asset, ev.status, nb)
+        t = time.time()
+        if storage.should_store(ev.status, nb, state.last_store.get(("daily", p["id"])), t,
+                                cfg.daily_observe_every_s, cfg.daily_min_edge_bps / 2, 600):
+            await dd.insert_signal(pool, p["id"], ev, secs)
+            state.last_store[("daily", p["id"])] = t
         if ev.net_bps is not None and ev.status in ("OBSERVE", "ACTIONABLE"):
             if stats["best_bps"] is None or ev.net_bps > stats["best_bps"]:
                 stats["best_bps"] = ev.net_bps
