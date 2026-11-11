@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 
 import httpx
 
-from . import api, daily, db, logbuf, maintenance, stats, windows
+from . import api, daily, weather, storage, db, logbuf, maintenance, stats, windows
 from .config import Config, load
 from .engine import evaluate
 from .venues.kalshi import KalshiClient
@@ -38,6 +38,10 @@ class State:
     def __init__(self, cfg: Config):
         self.started_at = time.time()
         self.known: dict = {}
+        self.counters = storage.Counters()   # compteurs horaires -> signal_counts
+        self.last_store: dict = {}           # dernier stockage par (type, clé) : échantillonnage
+        self.last_signal: dict = {}          # dernière évaluation par actif (panneau temps réel)
+        self.weather_stats: dict = {}
         self.daily_stats: dict = {}   # asset -> dernier état du cycle journalier (exposé par /api/daily/overview)
         self.pm_404: dict = {}   # (asset, t_start) -> nb de 404 consécutifs sur le book Polymarket
         self.dis_cache = DisCache(cfg)
@@ -46,6 +50,9 @@ class State:
         self.known.clear()
         self.pm_404.clear()
         self.daily_stats.clear()
+        self.weather_stats.clear()
+        self.last_store.clear()
+        self.last_signal.clear()
         self.dis_cache.data, self.dis_cache.ts = {}, 0.0
 
 
@@ -94,12 +101,23 @@ async def tick_asset(asset, cfg, pool, kal, pmc, known, dis_cache, state):
         log.info("%s polymarket book disponible à +%.0fs (après %d x 404)", asset, since, n)
     if isinstance(ks_b, Exception) or isinstance(pm_b, Exception):
         return
-    await db.insert_quote(pool, wid, ks_b)
-    await db.insert_quote(pool, wid, pm_b)
+    now_s = time.time()
+    if now_s - state.last_store.get(("quote", asset), 0.0) >= cfg.quote_store_every_s:   # cotes échantillonnées
+        await db.insert_quote(pool, wid, ks_b, cfg.quote_store_ladders)
+        await db.insert_quote(pool, wid, pm_b, cfg.quote_store_ladders)
+        state.last_store[("quote", asset)] = now_s
 
     secs_to_close = (end - datetime.now(timezone.utc)).total_seconds()
-    ev = evaluate(pm_b, ks_b, cfg.paper_size, secs_to_close, time.time(), cfg, dis_cache.get(asset))
-    await db.insert_signal(pool, wid, ev, secs_to_close)
+    ev = evaluate(pm_b, ks_b, cfg.paper_size, secs_to_close, now_s, cfg, dis_cache.get(asset))
+    state.counters.add("crypto15", asset, ev.status, ev.net_bps if ev.direction else None)
+    state.last_signal[asset] = {"asset": asset, "ts": datetime.now(timezone.utc).isoformat(), "status": ev.status,
+                                "reason": ev.reason, "direction": ev.direction, "n": ev.n, "vwap_pm": ev.vwap_pm,
+                                "vwap_ks": ev.vwap_ks, "gross": ev.gross, "net": ev.net, "net_bps": ev.net_bps,
+                                "p_dis": ev.p_dis, "secs_to_close": secs_to_close, "t_end": end.isoformat()}
+    if storage.should_store(ev.status, ev.net_bps if ev.direction else None, state.last_store.get(("signal", asset)),
+                            now_s, cfg.signal_observe_every_s, cfg.min_edge_bps / 2):
+        await db.insert_signal(pool, wid, ev, secs_to_close)
+        state.last_store[("signal", asset)] = now_s
     if ev.status == "ACTIONABLE" and not await db.has_trade(pool, wid):
         if await db.open_paper_trade(pool, wid, ev):
             log.info("PAPER TRADE %s %s n=%s pm=%.3f ks=%.3f net/ct=%.4f (%.0f bps)",
@@ -191,15 +209,6 @@ async def resolver_loop(cfg, pool, http):
         await asyncio.sleep(10)
 
 
-async def prune_loop(cfg, pool):
-    while True:
-        try:
-            await db.prune(pool, cfg.retention_days)
-        except Exception:
-            log.exception("prune")
-        await asyncio.sleep(6 * 3600)
-
-
 async def main() -> None:
     cfg = load()
     logging.basicConfig(level=cfg.log_level, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -219,13 +228,13 @@ async def main() -> None:
     async with httpx.AsyncClient(timeout=httpx.Timeout(5.0), limits=limits,
                                  headers={"User-Agent": "arbwatch-paper/0.1"}) as http:
         tasks = [collector_loop(cfg, pool, http, state), resolver_loop(cfg, pool, http),
-                 prune_loop(cfg, pool)]
+                 storage.maintain_loop(cfg, pool, state)]
         if cfg.daily_enabled:
             tasks += [daily.daily_loop(cfg, pool, http, state), daily.daily_resolver_loop(cfg, pool, http)]
+        if cfg.weather_enabled:
+            tasks += [weather.weather_loop(cfg, pool, http, state), weather.weather_resolver_loop(cfg, pool, http)]
         await asyncio.gather(*tasks)
 
 
-if __name__ == "__main__":
-    asyncio.run(main())
 if __name__ == "__main__":
     asyncio.run(main())
