@@ -29,6 +29,9 @@ class Config:
     ks_fee_coef: float = 0.07
     pm_fee_coef: float = 0.095   # feeCoefficient lu dans l'API Polymarket US (formule supposée: coef*p*(1-p)*N)
 
+    pm_flavor: str = "intl"          # "intl" (polymarket.com : Gamma + CLOB) ou "us" (gateway.polymarket.us)
+    pm_intl_fee_coef: float = 0.07   # PLACEHOLDER : frais taker dynamiques, formule coef*p*(1-p)*N ; à vérifier
+
     kalshi_base: str = "https://api.elections.kalshi.com/trade-api/v2"
     pm_base: str = "https://gateway.polymarket.us"
     pm_event_path: str = "/v1/events/slug/{slug}"
@@ -40,7 +43,7 @@ class Config:
     resolve_delay_s: float = 75
     log_level: str = "INFO"
 
-    daily_enabled: bool = True
+    daily_enabled: bool = False   # aucun contrat Polymarket international ne coïncide avec les journaliers Kalshi (17h ET, BRTI)
     daily_size: float = 10
     daily_poll_s: float = 20
     daily_scan_interval_s: float = 600
@@ -61,7 +64,7 @@ class Config:
     weather_min_edge_bps_next: float = 300
     weather_days_ahead: int = 1
     weather_max_stale_s: float = 10
-    weather_trusted_cities: str = ""
+    weather_trusted_cities: str = "auto"   # auto = villes à station unique ; all ; ou liste ; vide = aucune
     weather_resolve_delay_s: float = 3600
     pm_gamma_base: str = "https://gamma-api.polymarket.com"
     pm_clob_base: str = "https://clob.polymarket.com"
@@ -79,6 +82,13 @@ class Config:
     api_key: str = field(default="", repr=False)
     port: int = 8080
     api_cors: str = "*"
+
+
+def _pm_fee_eff(self) -> float:
+    return self.pm_intl_fee_coef if self.pm_flavor == "intl" else self.pm_fee_coef
+
+
+Config.pm_fee_eff = property(_pm_fee_eff)   # coefficient de frais Polymarket selon la version utilisée
 
 
 def load() -> Config:
@@ -100,6 +110,8 @@ def load() -> Config:
         lam=float(g("LAMBDA", d.lam)),
         ks_fee_coef=float(g("KS_FEE_COEF", d.ks_fee_coef)),
         pm_fee_coef=float(g("PM_FEE_COEF", d.pm_fee_coef)),
+        pm_flavor=g("PM_FLAVOR", d.pm_flavor).strip().lower(),
+        pm_intl_fee_coef=float(g("PM_INTL_FEE_COEF", d.pm_intl_fee_coef)),
         kalshi_base=g("KALSHI_BASE", d.kalshi_base).rstrip("/"),
         pm_base=g("PM_GATEWAY_BASE", d.pm_base).rstrip("/"),
         pm_event_path=g("PM_EVENT_PATH", d.pm_event_path),
@@ -109,7 +121,7 @@ def load() -> Config:
         retention_days=int(g("RETENTION_DAYS", d.retention_days)),
         resolve_delay_s=float(g("RESOLVE_DELAY_S", d.resolve_delay_s)),
         log_level=g("LOG_LEVEL", d.log_level),
-        daily_enabled=_b("DAILY_ENABLED", "true"),
+        daily_enabled=_b("DAILY_ENABLED", "false"),
         daily_size=float(g("DAILY_SIZE", d.daily_size)),
         daily_poll_s=float(g("DAILY_POLL_S", d.daily_poll_s)),
         daily_scan_interval_s=float(g("DAILY_SCAN_INTERVAL_S", d.daily_scan_interval_s)),
