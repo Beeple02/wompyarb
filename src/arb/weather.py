@@ -19,8 +19,8 @@ from . import weather_db as wdb
 from .config import Config
 from .daily_core import evaluate_pair
 from .models import MarketRef
-from .weather_core import (classify_pair, day_end_utc, directions_for, local_std_today, parse_intl_rain_event,
-                           parse_ks_rain_market)
+from .weather_core import (AMBIGUOUS_CITIES, CITIES, classify_pair, day_end_utc, directions_for, local_std_today, parse_intl_rain_event,
+                           parse_ks_rain_market, unrecognized_intl, unrecognized_ks)
 
 log = logging.getLogger("arb.weather")
 
@@ -30,27 +30,43 @@ def backoff_delay(attempt: int) -> float:
 
 
 def trusted_set(cfg: Config) -> set[str]:
-    return {c.strip().upper() for c in cfg.weather_trusted_cities.split(",") if c.strip()}
+    """auto : villes à station unique (les villes ambiguës exigent un code de station des deux côtés) ;
+    all : toutes ; sinon liste explicite ; chaîne vide : aucune."""
+    v = cfg.weather_trusted_cities.strip().upper()
+    if v == "AUTO":
+        return set(CITIES) - AMBIGUOUS_CITIES
+    if v == "ALL":
+        return set(CITIES)
+    return {c.strip().upper() for c in v.split(",") if c.strip()}
 
 
 async def gather_weather(cfg: Config, kal, pmi, now: datetime) -> dict:
     """Interroge les deux venues et classe les couples (sans écriture en base ; réutilisé par probe_weather)."""
     ks_raw = await kal.list_markets("KXRAIN")
     ks: dict[tuple, dict] = {}
+    unknown_ks: set[str] = set()
     for m in ks_raw:
         info = parse_ks_rain_market(m)
         if info:
             ks.setdefault((info["city"], info["day"]), info)
+        else:
+            u = unrecognized_ks(m)
+            if u:
+                unknown_ks.add(u)
     events = await pmi.weather_events()
     pm: dict[tuple, dict] = {}
-    for ev in events:
-        for mk in parse_intl_rain_event(ev):
-            pm.setdefault((mk["city"], mk["day"]), mk)
+    unknown_pm: set[str] = set()
+
+    def absorb(evs) -> None:
+        for ev in evs:
+            for mk in parse_intl_rain_event(ev):
+                pm.setdefault((mk["city"], mk["day"]), mk)
+            unknown_pm.update(unrecognized_intl(ev))
+
+    absorb(events)
     if not pm:   # filet : la catégorie 'weather' n'expose pas toujours ces événements
         try:
-            for ev in await pmi.search_events("where will it rain"):
-                for mk in parse_intl_rain_event(ev):
-                    pm.setdefault((mk["city"], mk["day"]), mk)
+            absorb(await pmi.search_events("where will it rain"))
         except Exception as e:
             log.info("recherche Polymarket: %r", e)
     trusted = trusted_set(cfg)
@@ -65,7 +81,14 @@ async def gather_weather(cfg: Config, kal, pmi, now: datetime) -> dict:
         pairs.append({"city": city, "day": day, "day_end": day_end_utc(city, day), "ks_ticker": ks[key]["ticker"],
                       "pm_event": pm[key]["event_slug"], "pm_slug": pm[key]["slug"], "pm_token": pm[key]["token_yes"],
                       "ks_rules": ks[key]["rules"], "pm_rules": pm[key]["rules"], **cls})
-    return {"ks_n": len(ks), "pm_n": len(pm), "pm_events": len(events), "pairs": pairs,
+    # Disponibilité par ville : où chaque venue liste la ville, et quels jours sont communs
+    cities = {}
+    for c in sorted({k[0] for k in ks} | {k[0] for k in pm}):
+        kd = sorted(str(d) for (cc, d) in ks if cc == c)
+        pd_ = sorted(str(d) for (cc, d) in pm if cc == c)
+        cities[c] = {"kalshi_days": kd, "polymarket_days": pd_, "common_days": sorted(set(kd) & set(pd_))}
+    return {"ks_n": len(ks), "pm_n": len(pm), "pm_events": len(events), "pairs": pairs, "cities": cities,
+            "unknown_ks": sorted(unknown_ks), "unknown_pm": sorted(unknown_pm),
             "only_ks": sorted(f"{c}@{d}" for c, d in set(ks) - set(pm)),
             "only_pm": sorted(f"{c}@{d}" for c, d in set(pm) - set(ks)), "skipped_days": skipped_days}
 
@@ -76,14 +99,21 @@ async def scan(cfg, pool, kal, pmi, state) -> None:
         await wdb.upsert_pair(pool, p)
     await wdb.deactivate_old(pool)
     n_ok = sum(1 for p in res["pairs"] if p["tradable"])
-    log.info("SCAN météo : kalshi=%d polymarket(intl)=%d communs=%d négociables=%d%s", res["ks_n"], res["pm_n"],
-             len(res["pairs"]), n_ok, "" if res["pairs"] else " (voir scripts/probe_weather.py)")
+    both = [c for c, v in res["cities"].items() if v["common_days"]]
+    log.info("SCAN météo : kalshi=%d polymarket(intl)=%d communs=%d négociables=%d villes en commun=%s%s", res["ks_n"],
+             res["pm_n"], len(res["pairs"]), n_ok, ",".join(both) or "aucune",
+             "" if res["pairs"] else " (voir scripts/probe_weather.py)")
+    if res["unknown_ks"] or res["unknown_pm"]:
+        log.info("SCAN météo : villes non reconnues (à ajouter à la table) kalshi=%s polymarket=%s",
+                 res["unknown_ks"][:10], res["unknown_pm"][:10])
     for p in res["pairs"]:
         if not p["tradable"]:
             log.info("SCAN météo : %s %s non négociable : %s", p["city"], p["day"], p["reason"])
     state.weather_stats.update({"last_scan": datetime.now(timezone.utc).isoformat(), "ks": res["ks_n"],
                                 "pm": res["pm_n"], "common": len(res["pairs"]), "tradable": n_ok,
-                                "only_ks": res["only_ks"][:30], "only_pm": res["only_pm"][:30]})
+                                "only_ks": res["only_ks"][:30], "only_pm": res["only_pm"][:30],
+                                "cities": res["cities"], "unknown_ks": res["unknown_ks"][:30],
+                                "unknown_pm": res["unknown_pm"][:30]})
 
 
 async def quote(cfg, pool, kal, pmi, state) -> None:
