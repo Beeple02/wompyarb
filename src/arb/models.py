@@ -8,7 +8,8 @@ Level = tuple[float, float]  # (price in dollars 0..1, quantity in contracts)
 @dataclass
 class MarketRef:
     venue: str
-    ident: str  # kalshi: market ticker ; polymarket: market slug
+    ident: str  # kalshi: market ticker ; polymarket US: market slug ; polymarket intl: token_id du côté Up/Yes
+    slug: str | None = None  # polymarket intl : slug du marché (pour la résolution)
 
 
 @dataclass
