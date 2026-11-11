@@ -57,11 +57,11 @@ Routes : `/api/daily/overview`, `/api/daily/pairs`, `/api/daily/signals`, `/api/
 
 Kalshi `KXRAIN` (« Where will it rain today ? ») <-> Polymarket **international** (polymarket.com : API publique Gamma +
 CLOB, distincte de polymarket.us). Kalshi n'a pas de plateforme « internationale » séparée : `api.elections.kalshi.com`
-sert tout le monde, le côté Kalshi est inchangé. Le moteur crypto existant reste, lui, branché sur Polymarket US.
+sert tout le monde, le côté Kalshi est inchangé. Depuis 0.7.0, le moteur crypto 15 min utilise lui aussi Polymarket international (voir ci-dessous).
 
 Le scanner n'autorise un trade qu'après avoir vérifié l'équivalence des deux contrats :
 - **ville + station NWS** (codes `CLIxxx`, `issuedby=`, ICAO lus dans les règles) : `match` / `mismatch` / `assumed`.
-  `assumed` (une règle sans code) n'est négociable que pour les villes listées dans `WEATHER_TRUSTED_CITIES` ;
+  `assumed` (une règle sans code) n'est négociable que pour les villes de `WEATHER_TRUSTED_CITIES` (défaut `auto` : les villes à station unique ; les villes ambiguës CHI, NYC, DFW, HOU, LAX, SFO, DCA exigent un code des deux côtés) ;
 - **jour climatologique** (minuit à minuit, heure locale standard) ;
 - **trace de pluie « T »** : lue dans les règles des deux côtés. Si elles diffèrent, seule la direction qui paie
   toujours >= 1 est évaluée (Yes là où la trace compte + No sur l'autre : paie 2 les jours de trace, 1 sinon) ;
@@ -88,6 +88,24 @@ soit ~150 Mo/jour pour le seul 15 min, bien plus avec les marchés journaliers e
 - `/api/live` lit la dernière évaluation en mémoire ; `/api/stats/signals?scope=crypto15|daily|weather` lit les compteurs
   agrégés : ils restent exacts malgré l'échantillonnage.
 Estimation en régime établi : < 100 Mo.
+
+## Polymarket international partout (0.7.0)
+
+`PM_FLAVOR=intl` (défaut) : le moteur 15 min lit Polymarket **international** (Gamma + CLOB, sans clé). Identifiant du marché :
+`{asset}-updown-15m-{epoch du début de fenêtre}` (ex. `btc-updown-15m-1776453300` = 17 avr 15h15 ET). Le côté « Up » est
+repéré par son nom (`outcomes`), plus par une supposition de sens du carnet. `PM_FLAVOR=us` rétablit l'ancien client.
+
+Conséquences à connaître (sources lues, pas encore confrontées à une réponse réelle) :
+- **Résolution différente de Kalshi** : Polymarket intl règle les 15 min sur un flux Chainlink (point dans le temps),
+  Kalshi sur la moyenne BRTI de 60 s. Un désaccord de résolution redevient possible : `p_dis` (prior 10 %) et
+  `resolutions.dis_kind` le mesurent. L'écart de prix n'est un profit que si les deux venues résolvent pareil.
+- **Frais taker dynamiques** sur Polymarket intl (formule publiée `C·p·feeRate·(p·(1−p))^exponent`, exposant retiré
+  ensuite pour certaines catégories ; paramètres par type de marché, endpoint `/fee-rate?token_id=`). `PM_INTL_FEE_COEF`
+  est un **placeholder** ; `scripts/probe_crypto_intl.py` affiche la réponse de `/fee-rate`.
+- **Marchés journaliers crypto désactivés** (`DAILY_ENABLED=false`) : les « Bitcoin above ___ on <date> » de Polymarket intl se
+  règlent sur la bougie Binance BTC/USDT de **12:00 ET**, alors que Kalshi règle à **17:00 ET** sur la moyenne BRTI : ce n'est
+  pas le même événement, le scanner n'aurait aucun couple valide.
+- `/api/stats/basis` est vide (pas de valeur de référence côté Polymarket intl).
 
 ## Version du moteur, protection et wipe de la DB
 
