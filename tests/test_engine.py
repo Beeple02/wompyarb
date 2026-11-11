@@ -38,7 +38,7 @@ def test_payout_and_dis_kind():
 
 
 def cfg(**kw):
-    return Config(pm_fee_coef=0.0, ks_fee_coef=0.0, **kw)
+    return Config(pm_fee_coef=0.0, pm_intl_fee_coef=0.0, ks_fee_coef=0.0, **kw)
 
 
 def test_actionable_when_edge_fresh_deep():
@@ -76,7 +76,7 @@ def test_below_threshold_is_observe_and_last_window_regime():
 def test_fees_reduce_edge():
     pm = book("polymarket", [(0.48, 100)], [(0.58, 100)])
     ks = book("kalshi", [(0.57, 100)], [(0.50, 100)])
-    ev = evaluate(pm, ks, 10, 400, NOW, Config(pm_fee_coef=0.0, ks_fee_coef=0.07), ZERO)
+    ev = evaluate(pm, ks, 10, 400, NOW, Config(pm_fee_coef=0.0, pm_intl_fee_coef=0.0, ks_fee_coef=0.07), ZERO)
     assert ev.fees_total == pytest.approx(kalshi_fee(0.50, 10))
     assert ev.net == pytest.approx(1 - 0.98 - ev.fees_total / 10)
 
