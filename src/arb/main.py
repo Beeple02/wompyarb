@@ -50,11 +50,13 @@ class State:
         self.weather_stats: dict = {}
         self.daily_stats: dict = {}   # asset -> dernier état du cycle journalier (exposé par /api/daily/overview)
         self.pm_404: dict = {}   # (asset, t_start) -> nb de 404 consécutifs sur le book Polymarket
+        self.pm_book_seen: set = set()   # (asset, t_start) dont le 1er book a déjà été journalisé
         self.dis_cache = DisCache(cfg)
 
     def reset_caches(self) -> None:
         self.known.clear()
         self.pm_404.clear()
+        self.pm_book_seen.clear()
         self.daily_stats.clear()
         self.weather_stats.clear()
         self.last_store.clear()
@@ -82,6 +84,8 @@ async def tick_asset(asset, cfg, pool, kal, pmc, known, dis_cache, state):
             del known[k]
         for k in [k for k in state.pm_404 if k[1] < start]:
             del state.pm_404[k]
+        for k in [k for k in state.pm_book_seen if k[1] < start]:
+            state.pm_book_seen.discard(k)
     wid, ks_ref, pm_ref = known[key]
 
     ks_b, pm_b = await asyncio.gather(kal.fetch_book(ks_ref), pmc.fetch_book(pm_ref),
@@ -101,8 +105,11 @@ async def tick_asset(asset, cfg, pool, kal, pmc, known, dis_cache, state):
             since = (datetime.now(timezone.utc) - start).total_seconds()
             log.info("%s polymarket book 404 à +%.0fs (%s) body=%r | %s", asset, since, pm_ref.slug or pm_ref.ident,
                      body, await pmc.diagnose(pm_ref))
-    elif key in state.pm_404 and not isinstance(pm_b, Exception):
-        n = state.pm_404.pop(key)
+    elif not isinstance(pm_b, Exception) and key not in state.pm_book_seen:
+        # 1er book de la fenêtre, même sans 404 : sans cette ligne, la mesure « délai avant
+        # l'apparition du book Polymarket » reste vide en PM_FLAVOR=intl (le book existe d'emblée).
+        n = state.pm_404.pop(key, 0)
+        state.pm_book_seen.add(key)
         since = (datetime.now(timezone.utc) - start).total_seconds()
         log.info("%s polymarket book disponible à +%.0fs (après %d x 404)", asset, since, n)
     if isinstance(ks_b, Exception) or isinstance(pm_b, Exception):
