@@ -20,9 +20,9 @@ import httpx
 from . import daily_db as dd
 from . import storage
 from .config import Config
-from .daily_core import (KS_DAILY_SERIES, NY, evaluate_pair, event_of, ks_mid, ks_threshold, match_pairs,
-                         parse_ks_event_ticker, parse_pm_daily_event, pm_daily_slug, pm_settle_from_date,
-                         thr_key)
+from .daily_core import (KS_DAILY_SERIES, NY, evaluate_pair, event_of, ks_mid, ks_threshold, ladder_note,
+                         match_pairs, parse_ks_event_ticker, parse_pm_daily_event, pm_daily_slug,
+                         pm_settle_from_date, thr_key)
 from .models import MarketRef
 
 log = logging.getLogger("arb.daily")
@@ -71,6 +71,8 @@ async def gather_asset(cfg: Config, kal, pmc, asset: str, now: datetime) -> dict
             continue
         ks_ev, kd = hit
         pairs = match_pairs(list(kd["markets"].values()), pmev["markets"])
+        if not pairs:
+            out["notes"].append(f"{slug}: aucun seuil commun — {ladder_note(list(kd['markets'].values()), pmev['markets'])}")
         out["matches"].append({"settle": kd["settle"], "ks_event": ks_ev, "pm_event": slug,
                                "n_ks": len(kd["markets"]), "n_pm": len(pmev["markets"]),
                                "pairs": [(th, k["ticker"], p["slug"]) for th, k, p in pairs]})
