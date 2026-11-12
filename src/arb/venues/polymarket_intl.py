@@ -1,54 +1,27 @@
+"""Polymarket INTERNATIONAL (polymarket.com) : API publique sans clé.
+
+  Gamma  https://gamma-api.polymarket.com  : événements / marchés (clobTokenIds, outcomes... en chaînes JSON)
+  CLOB   https://clob.polymarket.com       : GET /book?token_id=<id>  (bids croissants, asks décroissants)
+
+Distinct de Polymarket US (gateway.polymarket.us) : autres marchés, autres carnets, autres liquidités.
+"""
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
-from datetime import datetime
 
 import httpx
 
 from ..config import Config
-from ..models import Book, MarketRef, asks_from_bids
-from ..windows import pm_event_slug
-from .util import find_key, num, parse_levels
+from ..models import Book, MarketRef
+from .polymarket import _MAP, parse_book
 
-log = logging.getLogger("arb.polymarket")
-
-_MAP = {"up": "up", "yes": "up", "long": "up", "down": "down", "no": "down", "short": "down"}
+log = logging.getLogger("arb.polymarket_intl")
 
 
-def parse_book(js: dict, now: float, book_is_up: bool = True) -> Book:
-    """Le book public est celui d'UN outcome (par défaut Up/long).
-    Ask(Up) = asks ; Ask(Down) = 1 - bids.  PM_BOOK_IS_UP=false inverse."""
-    bids = parse_levels(find_key(js, ("bids", "bid")))
-    asks = sorted(parse_levels(find_key(js, ("asks", "offers", "ask"))))
-    up_asks, down_asks = asks, asks_from_bids(bids)
-    if not book_is_up:
-        up_asks, down_asks = down_asks, up_asks
-    return Book("polymarket", asks_up=up_asks, asks_down=down_asks, ts_recv=now)
-
-
-def parse_result(js: dict) -> str | None:
-    """Tolérant : cherche un gagnant explicite, sinon outcomePrices d'un marché clos."""
-    w = find_key(js, ("winner", "winningOutcome", "winning_outcome", "resolvedOutcome",
-                      "resolved_outcome", "resolution"))
-    if isinstance(w, str) and w.lower() in _MAP:
-        return _MAP[w.lower()]
-    closed = find_key(js, ("closed", "resolved", "ended"))
-    outcomes, prices = find_key(js, ("outcomes",)), find_key(js, ("outcomePrices", "outcome_prices"))
-    if closed is True and outcomes and prices:
-        try:
-            outcomes = json.loads(outcomes) if isinstance(outcomes, str) else outcomes
-            prices = json.loads(prices) if isinstance(prices, str) else prices
-            for name, p in zip(outcomes, prices):
-                if float(p) >= 0.99 and str(name).lower() in _MAP:
-                    return _MAP[str(name).lower()]
-        except (ValueError, TypeError):
-            return None
-    return None
-
-
-def _json_list(v):
+def _jl(v):
     if isinstance(v, str):
         try:
             return json.loads(v)
@@ -57,86 +30,109 @@ def _json_list(v):
     return v
 
 
-def parse_market(m: dict) -> dict:
-    """Statut, résultat (Yes = Up/above) et valeurs de référence d'UN marché (objet markets[i])."""
-    status = str(m.get("status", ""))
-    terms = m.get("assetPriceTerms") or {}
+def parse_intl_result(m: dict) -> dict:
+    """Marché Gamma -> {result: 'up' (Yes) | 'down' (No) | None, closed}. Résultat seulement si clos et tranché."""
+    def jl(v):
+        if isinstance(v, str):
+            try:
+                return json.loads(v)
+            except ValueError:
+                return None
+        return v
+    outcomes, prices = jl(m.get("outcomes")), jl(m.get("outcomePrices"))
     result = None
-    outcomes, prices = _json_list(m.get("outcomes")), _json_list(m.get("outcomePrices"))
-    if "RESOLVED" in status.upper() and outcomes and prices:
+    if m.get("closed") and outcomes and prices:
         try:
             for name, p in zip(outcomes, prices):
                 if float(p) >= 0.99 and str(name).lower() in _MAP:
                     result = _MAP[str(name).lower()]
         except (TypeError, ValueError):
             result = None
-    return {"result": result, "strike": num(terms.get("priceToBeat")),
-            "settle": num(terms.get("settlementPrice")), "status": status}
+    return {"result": result, "closed": bool(m.get("closed")),
+            "uma": m.get("umaResolutionStatus")}
 
 
-def parse_event(js: dict) -> dict | None:
-    """Résultat d'un événement up/down Polymarket US (endpoint /v1/events/slug/{slug}).
-
-    Structure observée : event.markets[0] avec status MARKET_STATUS_RESOLVED, outcomes ["Yes","No"],
-    outcomePrices ["0","1"] (Yes = Up = côté long) et assetPriceTerms.{priceToBeat, settlementPrice}.
-    Le résultat n'est renvoyé qu'une fois le marché résolu."""
-    ev = js.get("event", js) if isinstance(js, dict) else {}
-    markets = ev.get("markets") if isinstance(ev, dict) else None
-    m = markets[0] if isinstance(markets, list) and markets and isinstance(markets[0], dict) else None
-    return parse_market(m) if m is not None else None
-
-
-_DIAG_HINTS = ("active", "closed", "archived", "state", "status", "tradable", "accepting", "orderbook",
-               "enable", "open", "start", "end", "resolved", "liquidity", "volume")
-
-
-class PolymarketClient:
+class PolymarketIntl:
     def __init__(self, cfg: Config, http: httpx.AsyncClient):
         self.cfg, self.http = cfg, http
 
-    async def _get(self, path_tpl: str, slug: str) -> dict:
-        r = await self.http.get(self.cfg.pm_base + path_tpl.format(slug=slug))
-        r.raise_for_status()
-        return r.json()
+    async def _get(self, base: str, path: str, **params):
+        for attempt in range(3):
+            r = await self.http.get(base + path, params=params or None)
+            if r.status_code == 429 and attempt < 2:
+                await asyncio.sleep(1.0 * (attempt + 1))
+                continue
+            r.raise_for_status()
+            return r.json()
+        raise RuntimeError("unreachable")
 
-    async def discover(self, asset: str, start: datetime, end: datetime) -> MarketRef | None:
-        ev_slug = pm_event_slug(asset, start)
-        try:
-            js = await self._get(self.cfg.pm_event_path, ev_slug)
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 404:
-                return None
-            raise
-        markets = find_key(js, ("markets",))
-        if isinstance(markets, list):
-            for m in markets:
-                if isinstance(m, dict) and m.get("slug"):
-                    return MarketRef("polymarket", m["slug"])
-        return MarketRef("polymarket", ev_slug)
+    async def events(self, **params) -> list[dict]:
+        js = await self._get(self.cfg.pm_gamma_base, "/events", **params)
+        return js if isinstance(js, list) else (js.get("events") or [])
+
+    async def weather_events(self, max_pages: int = 6) -> list[dict]:
+        """Événements météo ouverts (catégorie 'weather'), paginés."""
+        out: list[dict] = []
+        for page in range(max_pages):
+            batch = await self.events(active="true", closed="false", tag_slug="weather", limit=100,
+                                      offset=page * 100, order="endDate", ascending="true")
+            out += batch
+            if len(batch) < 100:
+                break
+        return out
+
+    async def search_events(self, q: str) -> list[dict]:
+        js = await self._get(self.cfg.pm_gamma_base, "/public-search", q=q)
+        return js.get("events") or [] if isinstance(js, dict) else []
 
     async def fetch_book(self, ref: MarketRef) -> Book:
-        js = await self._get(self.cfg.pm_book_path, ref.ident)
-        return parse_book(js, time.time(), self.cfg.pm_book_is_up)
+        """ref.ident = token_id du côté Yes. Ask(Yes) = asks ; Ask(No) = 1 - bids."""
+        js = await self._get(self.cfg.pm_clob_base, "/book", token_id=ref.ident)
+        return parse_book(js, time.time(), True)
 
-    async def fetch_result(self, ref: MarketRef) -> str | None:
-        return parse_result(await self._get(self.cfg.pm_market_path, ref.ident))
+    async def fetch_market(self, slug: str) -> dict | None:
+        js = await self._get(self.cfg.pm_gamma_base, "/markets", slug=slug)
+        if isinstance(js, list):
+            return js[0] if js else None
+        return js
 
-    async def fetch_event(self, slug: str) -> dict:
-        """JSON brut d'un événement (marchés journaliers : un événement = une échelle de seuils)."""
-        return await self._get(self.cfg.pm_event_path, slug)
 
-    async def fetch_event_result(self, asset: str, start: datetime) -> dict | None:
-        """Résultat via l'endpoint ÉVÉNEMENT (le endpoint marché /v1/markets/slug/.. renvoie 404 après
-        la clôture ; l'événement reste disponible et porte le résultat)."""
-        return parse_event(await self._get(self.cfg.pm_event_path, pm_event_slug(asset, start)))
+class PolymarketIntlCrypto(PolymarketIntl):
+    """Marchés crypto up/down de 15 min sur Polymarket INTERNATIONAL, avec la même interface que le client US.
+
+    Identifiant : `{asset}-updown-15m-{epoch du DÉBUT de fenêtre}` (ex. btc-updown-15m-1776453300 = 17 avr 15h15 ET).
+    Résolution : flux Chainlink (point dans le temps), différente de Kalshi (moyenne BRTI sur 60 s) : un désaccord
+    de résolution est possible, mesuré par `resolutions.dis_kind`.
+    """
+
+    @staticmethod
+    def slug(asset: str, start) -> str:
+        return f"{asset}-updown-15m-{int(start.timestamp())}"
+
+    async def discover(self, asset: str, start, end) -> MarketRef | None:
+        slug = self.slug(asset, start)
+        evs = await self.events(slug=slug)
+        for ev in evs:
+            for m in ev.get("markets") or []:
+                outcomes, tokens = _jl(m.get("outcomes")), _jl(m.get("clobTokenIds"))
+                if not outcomes or not tokens or len(outcomes) != len(tokens):
+                    continue
+                idx = next((i for i, o in enumerate(outcomes) if str(o).lower() in ("up", "yes")), None)
+                if idx is not None:
+                    return MarketRef("polymarket", str(tokens[idx]), slug=m.get("slug") or slug)
+        return None
 
     async def diagnose(self, ref: MarketRef) -> str:
-        """Résumé (champs scalaires pertinents) du marché, pour comprendre un 404 sur le book."""
         try:
-            js = await self._get(self.cfg.pm_market_path, ref.ident)
-            m = js.get("market", js) if isinstance(js, dict) else {}
-            keep = {k: v for k, v in m.items()
-                    if any(h in k.lower() for h in _DIAG_HINTS) and not isinstance(v, (dict, list))}
-            return "market=" + json.dumps(keep, default=str)[:600]
-        except Exception as e:  # diagnostic seulement : ne doit jamais casser le tick
-            return f"market_fetch_error={e!r}"[:200]
+            fee = await self._get(self.cfg.pm_clob_base, "/fee-rate", token_id=ref.ident)
+            return f"fee-rate={fee}"
+        except Exception as e:
+            return f"diagnose_error={e!r}"[:200]
+
+    async def fetch_event_result(self, asset: str, start) -> dict | None:
+        m = await self.fetch_market(self.slug(asset, start))
+        if not m:
+            return None
+        r = parse_intl_result(m)
+        return {"result": r["result"], "strike": None, "settle": None,
+                "status": "closed" if r["closed"] else "open"}
