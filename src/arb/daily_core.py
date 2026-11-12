@@ -83,21 +83,34 @@ def parse_threshold_text(text: str) -> float | None:
     return None
 
 
+def _tick_decimals(m: dict, floor: Decimal) -> int:
+    """Décimales du tick de règlement : `custom_strike.round_digits` (2 pour BTC/ETH/SOL, 4 pour XRP),
+    sinon celles du floor_strike."""
+    rd = num((m.get("custom_strike") or {}).get("round_digits"))
+    if rd is not None and 0 <= rd <= 8 and float(rd).is_integer():
+        return int(rd)
+    return max(-floor.as_tuple().exponent, 0)
+
+
 def ks_threshold(m: dict) -> float | None:
-    """Seuil « or above » d'un marché Kalshi. Priorité au libellé ; sinon floor_strike (+1 tick si 'greater',
-    car Kalshi écrit 'above 73499.99' pour '$73,500 or above')."""
+    """Seuil « or above » d'un marché Kalshi.
+
+    Priorité au `floor_strike` (+ un tick si `strike_type='greater'`) : Kalshi écrit « above 73499.99 »
+    pour « $73,500 or above ». Le libellé n'est PAS fiable : sur XRP, Kalshi publie
+    « $1.37991 or above » (un chiffre de trop) alors que le vrai seuil est 1.3800 — en le lisant,
+    aucun seuil ne correspond à ceux de Polymarket (0.90, 1.00, 1.10...) et le scan ne trouve
+    aucun couple. Le libellé ne sert plus que de secours quand le strike est absent."""
+    fs, st = m.get("floor_strike"), str(m.get("strike_type", "")).lower()
+    if fs is not None:
+        d = Decimal(str(fs))
+        if st == "greater":
+            return float(d + Decimal(1).scaleb(-_tick_decimals(m, d)))
+        if st in ("greater_or_equal", "at_least"):
+            return float(d)
     for k in ("yes_sub_title", "subtitle", "title"):
         t = parse_threshold_text(str(m.get(k) or ""))
         if t is not None:
             return t
-    fs, st = m.get("floor_strike"), str(m.get("strike_type", "")).lower()
-    if fs is not None:
-        d = Decimal(str(fs))
-        decimals = max(-d.as_tuple().exponent, 0)
-        if st == "greater":
-            return float(d + Decimal(1).scaleb(-decimals))
-        if st in ("greater_or_equal", "at_least"):
-            return float(d)
     return None
 
 
@@ -146,6 +159,28 @@ def match_pairs(ks_markets: list[dict], pm_markets: list[dict]) -> list[tuple[fl
     for m in pm_markets:
         pm.setdefault(thr_key(m["threshold"]), m)
     return [(float(k), ks[k], pm[k]) for k in sorted(set(ks) & set(pm))]
+
+
+def _grid(values: list[float]) -> str:
+    """Résumé lisible d'une échelle de seuils : bornes + pas dominant."""
+    v = sorted(set(values))
+    if not v:
+        return "vide"
+    steps = [b - a for a, b in zip(v, v[1:]) if b > a]
+    step = f" pas={min(steps):g}" if steps else ""
+    return f"{len(v)} seuils [{v[0]:g}..{v[-1]:g}]{step}"
+
+
+def ladder_note(ks_markets: list[dict], pm_markets: list[dict]) -> str:
+    """Pourquoi deux échelles ne se recoupent pas : ce n'est pas un bug de parsing quand les deux
+    venues listent des grilles décalées (ex. ETH : Kalshi tous les 40 $ à partir de 1250,
+    Polymarket tous les 20 $ à partir de 1800 -> aucun seuil identique, donc aucun couple)."""
+    k = [float(m["threshold"]) for m in ks_markets if m.get("threshold") is not None]
+    p = [float(m["threshold"]) for m in pm_markets if m.get("threshold") is not None]
+    note = f"échelles disjointes : kalshi {_grid(k)} | polymarket {_grid(p)}"
+    if k and p:
+        note += f" | écart de seuil le plus proche = {min(abs(a - b) for a in k for b in p):g}"
+    return note
 
 
 # ---------- cotes Kalshi (liste des marchés) ----------
