@@ -47,7 +47,7 @@ class Config:
     resolve_delay_s: float = 75
     log_level: str = "INFO"
 
-    daily_enabled: bool = False   # aucun contrat Polymarket international ne coïncide avec les journaliers Kalshi (17h ET, BRTI)
+    daily_enabled: bool = True    # scanner sur Polymarket US (client dédié, indépendant de PM_FLAVOR) : mêmes règles BRTI 17h ET que Kalshi
     daily_size: float = 10
     daily_poll_s: float = 20
     daily_scan_interval_s: float = 600
@@ -129,7 +129,7 @@ def load() -> Config:
         retention_days=int(g("RETENTION_DAYS", d.retention_days)),
         resolve_delay_s=float(g("RESOLVE_DELAY_S", d.resolve_delay_s)),
         log_level=g("LOG_LEVEL", d.log_level),
-        daily_enabled=_b("DAILY_ENABLED", "false"),
+        daily_enabled=_b("DAILY_ENABLED", "true"),
         daily_size=float(g("DAILY_SIZE", d.daily_size)),
         daily_poll_s=float(g("DAILY_POLL_S", d.daily_poll_s)),
         daily_scan_interval_s=float(g("DAILY_SCAN_INTERVAL_S", d.daily_scan_interval_s)),
