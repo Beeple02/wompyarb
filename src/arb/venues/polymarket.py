@@ -70,7 +70,12 @@ def parse_market(m: dict) -> dict:
                     result = _MAP[str(name).lower()]
         except (TypeError, ValueError):
             result = None
-    return {"result": result, "strike": num(terms.get("priceToBeat")),
+    # Marchés journaliers : `priceToBeat` est null, le seuil est dans `strike.value`
+    # (sinon ks/pm_strike restent vides et /api/stats/basis + le contrôle settle>=strike sont muets).
+    strike = num(terms.get("priceToBeat"))
+    if strike is None:
+        strike = num(terms.get("strike"))
+    return {"result": result, "strike": strike,
             "settle": num(terms.get("settlementPrice")), "status": status}
 
 
