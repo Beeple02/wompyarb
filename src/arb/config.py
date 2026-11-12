@@ -11,6 +11,10 @@ def _b(name: str, default: str) -> bool:
 @dataclass(frozen=True)
 class Config:
     database_url: str = ""
+    database_url_fallback: str = ""   # DATABASE_PUBLIC_URL : secours si le DNS privé ne résout pas
+    db_wait_s: float = 300            # budget d'attente de la base au démarrage (0 = un seul essai)
+    db_retry_max_s: float = 15        # plafond du backoff entre deux tentatives
+    db_ssl: str = ""                  # vide = défaut asyncpg (prefer) ; disable|prefer|require|verify-full
     assets: tuple[str, ...] = ("btc", "eth", "sol", "xrp")
 
     paper_size: float = 10
@@ -95,7 +99,11 @@ def load() -> Config:
     g = os.getenv
     d = Config()
     return Config(
-        database_url=g("DATABASE_URL", ""),
+        database_url=g("DATABASE_URL", "").strip(),
+        database_url_fallback=(g("DATABASE_PUBLIC_URL", "") or g("DB_URL_FALLBACK", "")).strip(),
+        db_wait_s=float(g("DB_WAIT_S", d.db_wait_s)),
+        db_retry_max_s=float(g("DB_RETRY_MAX_S", d.db_retry_max_s)),
+        db_ssl=g("DB_SSL", d.db_ssl).strip().lower(),
         assets=tuple(a.strip().lower() for a in g("ASSETS", "btc,eth,sol,xrp").split(",") if a.strip()),
         paper_size=float(g("PAPER_SIZE", d.paper_size)),
         min_edge_bps=float(g("MIN_EDGE_BPS", d.min_edge_bps)),
