@@ -41,7 +41,8 @@ def parse_intl_result(m: dict) -> dict:
         return v
     outcomes, prices = jl(m.get("outcomes")), jl(m.get("outcomePrices"))
     result = None
-    if m.get("closed") and outcomes and prices:
+    resolved = bool(m.get("closed")) or str(m.get("umaResolutionStatus") or "").lower() == "resolved"
+    if resolved and outcomes and prices:
         try:
             for name, p in zip(outcomes, prices):
                 if float(p) >= 0.99 and str(name).lower() in _MAP:
@@ -91,10 +92,19 @@ class PolymarketIntl:
         return parse_book(js, time.time(), True)
 
     async def fetch_market(self, slug: str) -> dict | None:
-        js = await self._get(self.cfg.pm_gamma_base, "/markets", slug=slug)
-        if isinstance(js, list):
-            return js[0] if js else None
-        return js
+        """Marché Gamma par slug, OUVERT ou CLOS.
+
+        `/markets?slug=X` ne renvoie que les marchés encore ouverts : dès la clôture il répond `[]`.
+        Sans le second appel (`closed=true`), le résultat d'un marché 15 min n'est jamais trouvé, la
+        résolution reste incomplète et les paper trades ne sont jamais réglés."""
+        for params in ({"slug": slug}, {"slug": slug, "closed": "true"}):
+            js = await self._get(self.cfg.pm_gamma_base, "/markets", **params)
+            if isinstance(js, list):
+                if js:
+                    return js[0]
+            elif isinstance(js, dict) and js:
+                return js
+        return None
 
 
 class PolymarketIntlCrypto(PolymarketIntl):
@@ -130,7 +140,15 @@ class PolymarketIntlCrypto(PolymarketIntl):
             return f"diagnose_error={e!r}"[:200]
 
     async def fetch_event_result(self, asset: str, start) -> dict | None:
-        m = await self.fetch_market(self.slug(asset, start))
+        slug = self.slug(asset, start)
+        m = await self.fetch_market(slug)
+        if not m:
+            # filet : l'événement porte aussi ses marchés (même slug), y compris après clôture
+            for ev in await self.events(slug=slug):
+                m = next((x for x in (ev.get("markets") or [])
+                          if isinstance(x, dict) and (x.get("slug") or slug) == slug), None)
+                if m:
+                    break
         if not m:
             return None
         r = parse_intl_result(m)
