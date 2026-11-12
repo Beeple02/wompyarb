@@ -221,10 +221,16 @@ async def main() -> None:
     for noisy in ("httpx", "httpcore"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
     logbuf.install()
-    if not cfg.database_url:
-        raise SystemExit("DATABASE_URL manquant")
-    pool = await db.connect(cfg.database_url)
-    await db.init(pool)
+    if not cfg.database_url and not cfg.database_url_fallback:
+        raise SystemExit("DATABASE_URL manquant : lie le plugin Postgres au service "
+                         "(DATABASE_URL=${{Postgres.DATABASE_URL}})")
+    try:
+        pool = await db.connect(cfg.database_url, fallback_url=cfg.database_url_fallback,
+                                wait_s=cfg.db_wait_s, retry_max_s=cfg.db_retry_max_s,
+                                ssl=cfg.db_ssl or None)
+        await db.init(pool)
+    except db.DatabaseError as e:      # message actionnable, pas un traceback asyncpg de 60 lignes
+        raise SystemExit(str(e))
     action = await maintenance.startup(pool)   # wipe auto si version changée et DB non protégée
     await db.audit(pool, "main", "start", {"assets": cfg.assets, "paper_size": cfg.paper_size,
                                            "maintenance": action})
