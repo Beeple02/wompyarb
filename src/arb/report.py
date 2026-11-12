@@ -11,7 +11,11 @@ from .stats import wilson
 
 async def run() -> None:
     cfg = load()
-    pool = await db.connect(cfg.database_url)
+    try:                                  # CLI : on n'attend pas 5 min comme le démon
+        pool = await db.connect(cfg.database_url, fallback_url=cfg.database_url_fallback,
+                                wait_s=10, ssl=cfg.db_ssl or None)
+    except db.DatabaseError as e:
+        raise SystemExit(str(e))
     async with pool.acquire() as c:
         print("== Désaccords de résolution (official/official) ==")
         print(f"{'asset':5} {'n':>5} {'dis':>4} {'p̂':>7} {'IC95%':>16} {'PU_KD':>6} {'PD_KU':>6}")
